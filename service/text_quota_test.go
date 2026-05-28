@@ -172,6 +172,70 @@ func TestCacheWriteTokensTotal(t *testing.T) {
 	})
 }
 
+func TestShouldSuppressZeroCompletionStreamQuota(t *testing.T) {
+	summary := textQuotaSummary{
+		PromptTokens:     12039,
+		CompletionTokens: 0,
+		TotalTokens:      12039,
+		Quota:            45146,
+	}
+
+	t.Run("eof stream without completion is suppressed", func(t *testing.T) {
+		relayInfo := &relaycommon.RelayInfo{
+			IsStream:     true,
+			StreamStatus: relaycommon.NewStreamStatus(),
+		}
+		relayInfo.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+
+		suppress, reason := shouldSuppressZeroCompletionStreamQuota(relayInfo, summary)
+
+		require.True(t, suppress)
+		require.Equal(t, "zero_completion_stream_eof", reason)
+	})
+
+	t.Run("explicit done is still billable", func(t *testing.T) {
+		relayInfo := &relaycommon.RelayInfo{
+			IsStream:     true,
+			StreamStatus: relaycommon.NewStreamStatus(),
+		}
+		relayInfo.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+
+		suppress, reason := shouldSuppressZeroCompletionStreamQuota(relayInfo, summary)
+
+		require.False(t, suppress)
+		require.Empty(t, reason)
+	})
+
+	t.Run("nonzero completion is billable even when eof terminated", func(t *testing.T) {
+		relayInfo := &relaycommon.RelayInfo{
+			IsStream:     true,
+			StreamStatus: relaycommon.NewStreamStatus(),
+		}
+		relayInfo.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+		nonzeroCompletion := summary
+		nonzeroCompletion.CompletionTokens = 42
+		nonzeroCompletion.TotalTokens = nonzeroCompletion.PromptTokens + nonzeroCompletion.CompletionTokens
+
+		suppress, reason := shouldSuppressZeroCompletionStreamQuota(relayInfo, nonzeroCompletion)
+
+		require.False(t, suppress)
+		require.Empty(t, reason)
+	})
+
+	t.Run("non-stream zero completion is not handled by stream guard", func(t *testing.T) {
+		relayInfo := &relaycommon.RelayInfo{
+			IsStream:     false,
+			StreamStatus: relaycommon.NewStreamStatus(),
+		}
+		relayInfo.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+
+		suppress, reason := shouldSuppressZeroCompletionStreamQuota(relayInfo, summary)
+
+		require.False(t, suppress)
+		require.Empty(t, reason)
+	})
+}
+
 func TestCalculateTextQuotaSummaryHandlesLegacyClaudeDerivedOpenAIUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

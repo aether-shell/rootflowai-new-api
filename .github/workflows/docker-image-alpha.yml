@@ -1,4 +1,4 @@
-name: Publish Docker image (alpha)
+name: Disabled public Docker image publish (alpha)
 
 on:
   push:
@@ -12,6 +12,7 @@ on:
 
 jobs:
   build_single_arch:
+    if: ${{ false }}
     name: Build & push (${{ matrix.arch }}) [native]
     strategy:
       fail-fast: false
@@ -67,7 +68,7 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: |
-            calciumion/new-api
+            rootflowai/new-api
             ghcr.io/${{ env.GHCR_REPOSITORY }}
 
       - name: Build & push single-arch (to both registries)
@@ -78,8 +79,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            calciumion/new-api:alpha-${{ matrix.arch }}
-            calciumion/new-api:${{ steps.version.outputs.value }}-${{ matrix.arch }}
+            rootflowai/new-api:alpha-${{ matrix.arch }}
+            rootflowai/new-api:${{ steps.version.outputs.value }}-${{ matrix.arch }}
             ghcr.io/${{ env.GHCR_REPOSITORY }}:alpha-${{ matrix.arch }}
             ghcr.io/${{ env.GHCR_REPOSITORY }}:${{ steps.version.outputs.value }}-${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -93,19 +94,20 @@ jobs:
 
       - name: Sign image with cosign
         run: |
-          cosign sign --yes calciumion/new-api@${{ steps.build.outputs.digest }}
+          cosign sign --yes rootflowai/new-api@${{ steps.build.outputs.digest }}
           cosign sign --yes ghcr.io/${{ env.GHCR_REPOSITORY }}@${{ steps.build.outputs.digest }}
 
       - name: Output digest
         run: |
           echo "### Docker Image Digest (${{ matrix.arch }})" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "calciumion/new-api:alpha-${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
+          echo "rootflowai/new-api:alpha-${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
           echo "ghcr.io/${{ env.GHCR_REPOSITORY }}:alpha-${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.build.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
   create_manifests:
+    if: ${{ false }}
     name: Create multi-arch manifests (Docker Hub + GHCR)
     needs: [build_single_arch]
     runs-on: ubuntu-latest
@@ -137,16 +139,16 @@ jobs:
       - name: Create & push manifest (Docker Hub - alpha)
         run: |
           docker buildx imagetools create \
-            -t calciumion/new-api:alpha \
-            calciumion/new-api:alpha-amd64 \
-            calciumion/new-api:alpha-arm64
+            -t rootflowai/new-api:alpha \
+            rootflowai/new-api:alpha-amd64 \
+            rootflowai/new-api:alpha-arm64
 
       - name: Create & push manifest (Docker Hub - versioned alpha)
         run: |
           docker buildx imagetools create \
-            -t calciumion/new-api:${VERSION} \
-            calciumion/new-api:${VERSION}-amd64 \
-            calciumion/new-api:${VERSION}-arm64
+            -t rootflowai/new-api:${VERSION} \
+            rootflowai/new-api:${VERSION}-amd64 \
+            rootflowai/new-api:${VERSION}-arm64
 
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -173,7 +175,7 @@ jobs:
         run: |
           echo "### Multi-arch Manifest Digests" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          docker buildx imagetools inspect calciumion/new-api:alpha >> $GITHUB_STEP_SUMMARY
+          docker buildx imagetools inspect rootflowai/new-api:alpha >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           docker buildx imagetools inspect ghcr.io/${GHCR_REPOSITORY}:alpha >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

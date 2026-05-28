@@ -319,6 +319,23 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 	return "openai"
 }
 
+func shouldSuppressZeroCompletionStreamQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaSummary) (bool, string) {
+	if relayInfo == nil || !relayInfo.IsStream || relayInfo.StreamStatus == nil {
+		return false, ""
+	}
+	if summary.Quota <= 0 || summary.CompletionTokens != 0 || summary.TotalTokens <= 0 {
+		return false, ""
+	}
+	switch relayInfo.StreamStatus.EndReason {
+	case relaycommon.StreamEndReasonDone:
+		return false, ""
+	case relaycommon.StreamEndReasonNone:
+		return false, ""
+	default:
+		return true, fmt.Sprintf("zero_completion_stream_%s", relayInfo.StreamStatus.EndReason)
+	}
+}
+
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
 	if usage == nil {
@@ -344,6 +361,15 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 			tieredResult = tieredRes
 			summary.Quota = composeTieredTextQuota(relayInfo, summary, tieredQuota, tieredRes)
 		}
+	}
+	suppressedQuota := 0
+	suppressedReason := ""
+	if suppress, reason := shouldSuppressZeroCompletionStreamQuota(relayInfo, summary); suppress {
+		suppressedQuota = summary.Quota
+		suppressedReason = reason
+		summary.Quota = 0
+		extraContent = append(extraContent, "流式响应未正常完成且没有输出，已按异常空响应处理，不扣费")
+		logger.LogError(ctx, fmt.Sprintf("zero completion stream response, suppress quota %d, userId %d, channelId %d, tokenId %d, model %s, stream_status %s", suppressedQuota, relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.StreamStatus.Summary()))
 	}
 
 	if summary.WebSearchCallCount > 0 {
@@ -400,6 +426,11 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	}
 	if adminRejectReason != "" {
 		other["reject_reason"] = adminRejectReason
+	}
+	if suppressedQuota > 0 {
+		other["quota_suppressed"] = true
+		other["suppressed_quota"] = suppressedQuota
+		other["suppress_reason"] = suppressedReason
 	}
 	if summary.ImageTokens != 0 {
 		other["image"] = true
