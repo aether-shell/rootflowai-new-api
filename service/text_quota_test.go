@@ -172,6 +172,29 @@ func TestCacheWriteTokensTotal(t *testing.T) {
 	})
 }
 
+func TestShouldSuppressClientResponseWriteQuota(t *testing.T) {
+	require.True(t, shouldSuppressClientResponseWriteQuota(
+		&relaycommon.RelayInfo{IsStream: false},
+		textQuotaSummary{Quota: 50000},
+		"write tcp: broken pipe",
+	))
+	require.False(t, shouldSuppressClientResponseWriteQuota(
+		&relaycommon.RelayInfo{IsStream: true},
+		textQuotaSummary{Quota: 50000},
+		"write tcp: broken pipe",
+	))
+	require.False(t, shouldSuppressClientResponseWriteQuota(
+		&relaycommon.RelayInfo{IsStream: false},
+		textQuotaSummary{Quota: 50000},
+		"",
+	))
+	require.False(t, shouldSuppressClientResponseWriteQuota(
+		&relaycommon.RelayInfo{IsStream: false},
+		textQuotaSummary{Quota: 0},
+		"write tcp: broken pipe",
+	))
+}
+
 func TestShouldSuppressZeroCompletionStreamQuota(t *testing.T) {
 	summary := textQuotaSummary{
 		PromptTokens:     12039,

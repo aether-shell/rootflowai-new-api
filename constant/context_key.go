@@ -63,6 +63,10 @@ const (
 	// It is not returned to end users, but can be persisted into consume/error logs for debugging.
 	ContextKeyAdminRejectReason ContextKey = "admin_reject_reason"
 
+	// ContextKeyClientResponseWriteError stores an internal response write error after upstream success.
+	// It is persisted into consume logs so operators can tell when content may not have reached the client.
+	ContextKeyClientResponseWriteError ContextKey = "client_response_write_error"
+
 	// ContextKeyLanguage stores the user's language preference for i18n
 	ContextKeyLanguage ContextKey = "language"
 	ContextKeyIsStream ContextKey = "is_stream"

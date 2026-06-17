@@ -346,6 +346,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	}
 
 	adminRejectReason := common.GetContextKeyString(ctx, constant.ContextKeyAdminRejectReason)
+	clientWriteErr := common.GetContextKeyString(ctx, constant.ContextKeyClientResponseWriteError)
 	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
 
 	var tieredResult *billingexpr.TieredResult
@@ -370,6 +371,13 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		summary.Quota = 0
 		extraContent = append(extraContent, "流式响应未正常完成且没有输出，已按异常空响应处理，不扣费")
 		logger.LogError(ctx, fmt.Sprintf("zero completion stream response, suppress quota %d, userId %d, channelId %d, tokenId %d, model %s, stream_status %s", suppressedQuota, relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.StreamStatus.Summary()))
+	}
+	if shouldSuppressClientResponseWriteQuota(relayInfo, summary, clientWriteErr) {
+		suppressedQuota = summary.Quota
+		suppressedReason = "client_response_write_failed"
+		summary.Quota = 0
+		extraContent = append(extraContent, "响应写回客户端失败，用户可能未收到完整结果，已按未送达处理不扣费")
+		logger.LogError(ctx, fmt.Sprintf("client response write failed, suppress quota %d, userId %d, channelId %d, tokenId %d, model %s, err %s", suppressedQuota, relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, common.LocalLogPreview(clientWriteErr)))
 	}
 
 	if summary.WebSearchCallCount > 0 {
@@ -460,6 +468,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		other["image_generation_call"] = true
 		other["image_generation_call_price"] = summary.ImageGenerationCallPrice
 	}
+	if clientWriteErr != "" {
+		other["client_response_write_failed"] = true
+		other["client_response_write_error"] = common.LocalLogPreview(clientWriteErr)
+	}
 	if summary.CacheCreationTokens > 0 {
 		other["cache_creation_tokens"] = summary.CacheCreationTokens
 		other["cache_creation_ratio"] = summary.CacheCreationRatio
@@ -507,4 +519,8 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(summary.CompletionTokens))
 	})
+}
+
+func shouldSuppressClientResponseWriteQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaSummary, writeErr string) bool {
+	return writeErr != "" && relayInfo != nil && !relayInfo.IsStream && summary.Quota > 0
 }
