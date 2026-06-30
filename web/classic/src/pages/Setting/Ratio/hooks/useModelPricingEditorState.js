@@ -30,6 +30,7 @@ const EMPTY_CANDIDATE_MODEL_NAMES = [];
 const EMPTY_MODEL = {
   name: '',
   billingMode: 'per-token',
+  modelBillingMode: 'default',
   fixedPrice: '',
   inputPrice: '',
   completionPrice: '',
@@ -123,6 +124,12 @@ const normalizeCompletionRatioMeta = (rawMeta) => {
 
 const buildModelState = (name, sourceMaps) => {
   const billingMode = sourceMaps.ModelBillingMode?.[name];
+  const taskBillingMode = sourceMaps.TaskBillingMode?.[name];
+  const modelBillingMode =
+    taskBillingMode === 'task' || taskBillingMode === 'second'
+      ? taskBillingMode
+      : 'default';
+
   if (billingMode === 'tiered_expr') {
     const fullBillingExpr = sourceMaps.ModelBillingExpr?.[name] || '';
     const { billingExpr, requestRuleExpr } =
@@ -131,6 +138,7 @@ const buildModelState = (name, sourceMaps) => {
       ...EMPTY_MODEL,
       name,
       billingMode: 'tiered_expr',
+      modelBillingMode,
       billingExpr,
       requestRuleExpr,
       rawRatios: { ...EMPTY_MODEL.rawRatios },
@@ -162,6 +170,7 @@ const buildModelState = (name, sourceMaps) => {
     ...EMPTY_MODEL,
     name,
     billingMode: hasValue(fixedPrice) ? 'per-request' : 'per-token',
+    modelBillingMode,
     fixedPrice,
     inputPrice,
     completionRatioLocked: completionRatioMeta.locked,
@@ -289,22 +298,27 @@ export const getModelWarnings = (model, t) => {
 };
 
 export const buildSummaryText = (model, t) => {
+  const taskBillingSuffix =
+    model.modelBillingMode && model.modelBillingMode !== 'default'
+      ? `，${t('任务计费')} ${model.modelBillingMode}`
+      : '';
   const requestRuleSuffix =
     model.billingMode === 'tiered_expr' && model.requestRuleExpr
     ? `，${t('请求规则')}`
     : '';
   if (model.billingMode === 'tiered_expr') {
     const expr = model.billingExpr;
-    if (!expr) return `${t('表达式计费')}${requestRuleSuffix}`;
+    if (!expr)
+      return `${t('表达式计费')}${requestRuleSuffix}${taskBillingSuffix}`;
     const tierCount = (expr.match(/tier\(/g) || []).length;
     if (tierCount === 0) {
-      return `${t('表达式计费')}${requestRuleSuffix}`;
+      return `${t('表达式计费')}${requestRuleSuffix}${taskBillingSuffix}`;
     }
-    return `${t('阶梯计费')} (${tierCount} ${t('档')})${requestRuleSuffix}`;
+    return `${t('阶梯计费')} (${tierCount} ${t('档')})${requestRuleSuffix}${taskBillingSuffix}`;
   }
 
   if (model.billingMode === 'per-request' && hasValue(model.fixedPrice)) {
-    return `${t('按次')} $${model.fixedPrice} / ${t('次')}${requestRuleSuffix}`;
+    return `${t('按次')} $${model.fixedPrice} / ${t('次')}${requestRuleSuffix}${taskBillingSuffix}`;
   }
 
   if (hasValue(model.inputPrice)) {
@@ -318,10 +332,10 @@ export const buildSummaryText = (model, t) => {
     ].filter(hasValue).length;
     const extraLabel =
       extraCount > 0 ? `，${t('额外价格项')} ${extraCount}` : '';
-    return `${t('输入')} $${model.inputPrice}${extraLabel}${requestRuleSuffix}`;
+    return `${t('输入')} $${model.inputPrice}${extraLabel}${requestRuleSuffix}${taskBillingSuffix}`;
   }
 
-  return `${t('未设置价格')}${requestRuleSuffix}`;
+  return `${t('未设置价格')}${requestRuleSuffix}${taskBillingSuffix}`;
 };
 
 export const buildOptionalFieldToggles = (model) => ({
@@ -458,14 +472,23 @@ export const buildPreviewRows = (model, t) => {
     model.billingExpr,
     model.requestRuleExpr,
   );
+  const taskBillingRow = {
+    key: 'TaskBillingMode',
+    label: 'ModelBillingMode',
+    value:
+      model.modelBillingMode && model.modelBillingMode !== 'default'
+        ? model.modelBillingMode
+        : t('默认'),
+  };
 
   if (model.billingMode === 'tiered_expr') {
     const rows = [
       {
         key: 'BillingMode',
-        label: 'ModelBillingMode',
+        label: 'BillingMode',
         value: 'tiered_expr',
       },
+      taskBillingRow,
     ];
     if (finalBillingExpr) {
       const tierCount = (model.billingExpr.match(/tier\(/g) || []).length;
@@ -489,6 +512,7 @@ export const buildPreviewRows = (model, t) => {
 
   if (model.billingMode === 'per-request') {
     const rows = [
+      taskBillingRow,
       {
         key: 'ModelPrice',
         label: 'ModelPrice',
@@ -501,6 +525,7 @@ export const buildPreviewRows = (model, t) => {
   const inputPrice = toNumberOrNull(model.inputPrice);
   if (inputPrice === null) {
     const rows = [
+      taskBillingRow,
       {
         key: 'ModelRatio',
         label: 'ModelRatio',
@@ -562,6 +587,7 @@ export const buildPreviewRows = (model, t) => {
   const audioOutputPrice = toNumberOrNull(model.audioOutputPrice);
 
   const rows = [
+    taskBillingRow,
     {
       key: 'ModelRatio',
       label: 'ModelRatio',
@@ -638,6 +664,7 @@ export function useModelPricingEditorState({
   useEffect(() => {
     const sourceMaps = {
       ModelPrice: parseOptionJSON(options.ModelPrice),
+      TaskBillingMode: parseOptionJSON(options.ModelBillingMode),
       ModelRatio: parseOptionJSON(options.ModelRatio),
       CompletionRatio: parseOptionJSON(options.CompletionRatio),
       CompletionRatioMeta: parseOptionJSON(options.CompletionRatioMeta),
@@ -653,6 +680,7 @@ export function useModelPricingEditorState({
     const names = new Set([
       ...candidateModelNames,
       ...Object.keys(sourceMaps.ModelPrice),
+      ...Object.keys(sourceMaps.TaskBillingMode),
       ...Object.keys(sourceMaps.ModelRatio),
       ...Object.keys(sourceMaps.CompletionRatio),
       ...Object.keys(sourceMaps.CompletionRatioMeta),
@@ -883,6 +911,15 @@ export function useModelPricingEditorState({
     });
   };
 
+  const handleModelBillingModeChange = (value) => {
+    if (!selectedModel) return;
+    upsertModel(selectedModel.name, (model) => ({
+      ...model,
+      modelBillingMode:
+        value === 'task' || value === 'second' ? value : 'default',
+    }));
+  };
+
   const handleBillingExprChange = (newExpr) => {
     if (!selectedModel) return;
     upsertModel(selectedModel.name, (model) => ({
@@ -963,6 +1000,7 @@ export function useModelPricingEditorState({
         const nextModel = {
           ...model,
           billingMode: selectedModel.billingMode,
+          modelBillingMode: selectedModel.modelBillingMode || 'default',
           fixedPrice: selectedModel.fixedPrice,
           inputPrice: selectedModel.inputPrice,
           completionPrice: selectedModel.completionPrice,
@@ -1025,6 +1063,7 @@ export function useModelPricingEditorState({
     try {
       const output = {
         ModelPrice: {},
+        ModelBillingMode: {},
         ModelRatio: {},
         CompletionRatio: {},
         CacheRatio: {},
@@ -1049,6 +1088,12 @@ export function useModelPricingEditorState({
             tieredOutput['billing_setting.billing_mode'][model.name] = 'tiered_expr';
             tieredOutput['billing_setting.billing_expr'][model.name] = finalBillingExpr;
           }
+        }
+        if (
+          model.modelBillingMode === 'task' ||
+          model.modelBillingMode === 'second'
+        ) {
+          output.ModelBillingMode[model.name] = model.modelBillingMode;
         }
 
         // Always serialize ratio/price values for all models (including
@@ -1123,6 +1168,7 @@ export function useModelPricingEditorState({
     handleOptionalFieldToggle,
     handleNumericFieldChange,
     handleBillingModeChange,
+    handleModelBillingModeChange,
     handleBillingExprChange,
     handleRequestRuleExprChange,
     handleSubmit,

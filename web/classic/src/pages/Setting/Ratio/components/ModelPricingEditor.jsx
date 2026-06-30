@@ -28,6 +28,7 @@ import {
   Modal,
   Radio,
   RadioGroup,
+  Select,
   Space,
   Switch,
   Table,
@@ -124,6 +125,7 @@ export default function ModelPricingEditor({
     handleOptionalFieldToggle,
     handleNumericFieldChange,
     handleBillingModeChange,
+    handleModelBillingModeChange,
     handleBillingExprChange,
     handleRequestRuleExprChange,
     handleSubmit,
@@ -403,6 +405,28 @@ export default function ModelPricingEditor({
               />
             ) : (
               <div>
+                <div className='mb-4'>
+                  <div className='mb-2 font-medium text-gray-700'>
+                    {t('任务/视频计费模式')}
+                  </div>
+                  <Select
+                    value={selectedModel.modelBillingMode || 'default'}
+                    onChange={handleModelBillingModeChange}
+                    style={{ width: '100%' }}
+                  >
+                    <Select.Option value='default'>{t('默认')}</Select.Option>
+                    <Select.Option value='task'>{t('task 按次')}</Select.Option>
+                    <Select.Option value='second'>
+                      {t('second 按秒/数量')}
+                    </Select.Option>
+                  </Select>
+                  <div className='mt-2 text-xs text-gray-500'>
+                    {t(
+                      '替代 TASK_PRICE_PATCH。task 表示按次计费且不再乘秒数；second 表示按秒/数量计费，会乘请求里的单位数。',
+                    )}
+                  </div>
+                </div>
+
                 <div className='mb-4'>
                   <div className='mb-2 font-medium text-gray-700'>
                     {t('计费方式')}

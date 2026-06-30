@@ -53,6 +53,13 @@ import {
   InputGroupInput,
 } from '@/components/ui/input-group'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -91,6 +98,7 @@ type ModelPricingFormValues = z.infer<
 >
 
 type PricingMode = 'per-token' | 'per-request' | 'tiered_expr'
+type TaskBillingMode = 'default' | 'task' | 'second'
 type LaneKey =
   | 'completion'
   | 'cache'
@@ -110,6 +118,7 @@ export type ModelRatioData = {
   audioRatio?: string
   audioCompletionRatio?: string
   billingMode?: PricingMode
+  modelBillingMode?: 'task' | 'second'
   billingExpr?: string
   requestRuleExpr?: string
 }
@@ -287,20 +296,34 @@ function getModeBadgeVariant(
   return 'outline'
 }
 
+function getTaskBillingModeLabel(mode: TaskBillingMode) {
+  if (mode === 'task') return 'Task'
+  if (mode === 'second') return 'Second'
+  return 'Default'
+}
+
 function buildPreviewRows(
   values: ModelPricingFormValues,
   mode: PricingMode,
   billingExpr: string,
   requestRuleExpr: string,
+  taskBillingMode: TaskBillingMode,
   promptPrice: string,
   lanePrices: Record<LaneKey, string>,
   laneEnabled: Record<LaneKey, boolean>,
   t: (key: string) => string
 ): PreviewRow[] {
+  const taskBillingRow = {
+    key: 'taskBillingMode',
+    label: 'ModelBillingMode',
+    value: taskBillingMode === 'default' ? t('Default') : taskBillingMode,
+  }
+
   if (mode === 'tiered_expr') {
     const effectiveExpr = combineBillingExpr(billingExpr, requestRuleExpr)
     return [
       { key: 'mode', label: 'BillingMode', value: 'tiered_expr' },
+      taskBillingRow,
       {
         key: 'expr',
         label: t('Expression'),
@@ -312,6 +335,7 @@ function buildPreviewRows(
 
   if (mode === 'per-request') {
     return [
+      taskBillingRow,
       {
         key: 'price',
         label: 'ModelPrice',
@@ -321,6 +345,7 @@ function buildPreviewRows(
   }
 
   return [
+    taskBillingRow,
     {
       key: 'inputPrice',
       label: t('Input price'),
@@ -432,6 +457,8 @@ export function ModelPricingEditorPanel({
   })
   const [billingExpr, setBillingExpr] = useState('')
   const [requestRuleExpr, setRequestRuleExpr] = useState('')
+  const [taskBillingMode, setTaskBillingMode] =
+    useState<TaskBillingMode>('default')
   const [previewOpen, setPreviewOpen] = useState(true)
   const isEditMode = !!editData
 
@@ -474,6 +501,7 @@ export function ModelPricingEditorPanel({
       )
       setBillingExpr(editData.billingExpr || '')
       setRequestRuleExpr(editData.requestRuleExpr || '')
+      setTaskBillingMode(editData.modelBillingMode || 'default')
     } else {
       form.reset({
         name: '',
@@ -489,6 +517,7 @@ export function ModelPricingEditorPanel({
       setPricingMode('per-token')
       setBillingExpr('')
       setRequestRuleExpr('')
+      setTaskBillingMode('default')
     }
 
     setPromptPrice(nextLaneState.promptPrice)
@@ -625,6 +654,7 @@ export function ModelPricingEditorPanel({
         pricingMode,
         billingExpr,
         requestRuleExpr,
+        taskBillingMode,
         promptPrice,
         lanePrices,
         laneEnabled,
@@ -637,6 +667,7 @@ export function ModelPricingEditorPanel({
       pricingMode,
       promptPrice,
       requestRuleExpr,
+      taskBillingMode,
       t,
       watchedValues,
     ]
@@ -725,6 +756,10 @@ export function ModelPricingEditorPanel({
       audioCompletionRatio: values.audioCompletionRatio || '',
     }
 
+    if (taskBillingMode !== 'default') {
+      data.modelBillingMode = taskBillingMode
+    }
+
     if (pricingMode === 'tiered_expr') {
       data.billingExpr = billingExpr
       data.requestRuleExpr = requestRuleExpr
@@ -801,6 +836,36 @@ export function ModelPricingEditorPanel({
                   </FormItem>
                 )}
               />
+
+              <Field>
+                <FieldLabel>{t('Task billing mode')}</FieldLabel>
+                <Select
+                  value={taskBillingMode}
+                  onValueChange={(value) =>
+                    setTaskBillingMode(value as TaskBillingMode)
+                  }
+                >
+                  <SelectTrigger className='w-full'>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value='default'>
+                      {t(getTaskBillingModeLabel('default'))}
+                    </SelectItem>
+                    <SelectItem value='task'>
+                      {t(getTaskBillingModeLabel('task'))}
+                    </SelectItem>
+                    <SelectItem value='second'>
+                      {t(getTaskBillingModeLabel('second'))}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  {t(
+                    'Controls task/video billing. Task skips seconds multipliers; second multiplies request units.'
+                  )}
+                </FieldDescription>
+              </Field>
 
               <Tabs value={pricingMode} onValueChange={handleModeChange}>
                 <TabsList className='grid w-full grid-cols-3'>

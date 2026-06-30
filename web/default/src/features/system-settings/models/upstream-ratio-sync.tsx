@@ -62,6 +62,7 @@ import { UpstreamRatioSyncTable } from './upstream-ratio-sync-table'
 type UpstreamRatioSyncProps = {
   modelRatios: {
     ModelPrice: string
+    ModelBillingMode: string
     ModelRatio: string
     CompletionRatio: string
     CacheRatio: string

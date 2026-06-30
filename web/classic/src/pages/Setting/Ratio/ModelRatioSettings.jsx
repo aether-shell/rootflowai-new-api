@@ -41,6 +41,7 @@ export default function ModelRatioSettings(props) {
   const [loading, setLoading] = useState(false);
   const [inputs, setInputs] = useState({
     ModelPrice: '',
+    ModelBillingMode: '{}',
     ModelRatio: '',
     CacheRatio: '',
     CreateCacheRatio: '',
@@ -160,6 +161,32 @@ export default function ModelRatioSettings(props) {
                 },
               ]}
               onChange={(value) => setInputs({ ...inputs, ModelPrice: value })}
+            />
+          </Col>
+        </Row>
+        <Row gutter={16}>
+          <Col xs={24} sm={16}>
+            <Form.TextArea
+              label={t('任务/视频计费模式')}
+              extraText={t(
+                '为一个 JSON 文本，键为模型名称，值为 task 或 second。task 表示按次计费且不再乘秒数；second 表示按秒/数量计费，会乘请求里的单位数。',
+              )}
+              placeholder={t(
+                '例如：{"gemini-omini-720p-4s": "task", "Gemini-Omini-720p-video": "second"}',
+              )}
+              field={'ModelBillingMode'}
+              autosize={{ minRows: 3, maxRows: 8 }}
+              trigger='blur'
+              stopValidateWithError
+              rules={[
+                {
+                  validator: (rule, value) => verifyJSON(value),
+                  message: '不是合法的 JSON 字符串',
+                },
+              ]}
+              onChange={(value) =>
+                setInputs({ ...inputs, ModelBillingMode: value })
+              }
             />
           </Col>
         </Row>

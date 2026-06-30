@@ -69,6 +69,7 @@ import { formatPricingNumber } from './pricing-format'
 
 type ModelRatioVisualEditorProps = {
   modelPrice: string
+  modelBillingMode: string
   modelRatio: string
   cacheRatio: string
   createCacheRatio: string
@@ -92,6 +93,7 @@ type ModelRow = {
   audioRatio?: string
   audioCompletionRatio?: string
   billingMode?: string
+  modelBillingMode?: 'task' | 'second'
   billingExpr?: string
   requestRuleExpr?: string
   hasConflict: boolean
@@ -131,6 +133,20 @@ const getModeLabel = (mode?: string) => {
 const getModeVariant = (mode?: string): 'warning' | 'info' | 'success' => {
   if (mode === 'per-request') return 'warning'
   if (mode === 'tiered_expr') return 'info'
+  return 'success'
+}
+
+const getModelBillingModeLabel = (mode?: string) => {
+  if (mode === 'task') return 'Task'
+  if (mode === 'second') return 'Second'
+  return 'Default'
+}
+
+const getModelBillingModeVariant = (
+  mode?: string
+): 'warning' | 'info' | 'success' => {
+  if (mode === 'task') return 'warning'
+  if (mode === 'second') return 'info'
   return 'success'
 }
 
@@ -195,6 +211,7 @@ const getPriceDetail = (row: ModelRow, t: (key: string) => string) => {
 export const ModelRatioVisualEditor = memo(
   function ModelRatioVisualEditor({
     modelPrice,
+    modelBillingMode,
     modelRatio,
     cacheRatio,
     createCacheRatio,
@@ -267,6 +284,13 @@ export const ModelRatioVisualEditor = memo(
         fallback: {},
         context: 'model ratios',
       })
+      const modelBillingModeMap = safeJsonParse<Record<string, string>>(
+        modelBillingMode,
+        {
+          fallback: {},
+          context: 'model billing mode',
+        }
+      )
       const cacheMap = safeJsonParse<Record<string, number>>(cacheRatio, {
         fallback: {},
         context: 'cache ratios',
@@ -308,6 +332,7 @@ export const ModelRatioVisualEditor = memo(
 
       const modelNames = new Set([
         ...Object.keys(priceMap),
+        ...Object.keys(modelBillingModeMap),
         ...Object.keys(ratioMap),
         ...Object.keys(cacheMap),
         ...Object.keys(createCacheMap),
@@ -321,6 +346,9 @@ export const ModelRatioVisualEditor = memo(
 
       const modelData: ModelRow[] = Array.from(modelNames).map((name) => {
         const price = priceMap[name]?.toString() || ''
+        const mode = modelBillingModeMap[name]
+        const normalizedModelBillingMode =
+          mode === 'task' || mode === 'second' ? mode : undefined
         const ratio = ratioMap[name]?.toString() || ''
         const cache = cacheMap[name]?.toString() || ''
         const createCache = createCacheMap[name]?.toString() || ''
@@ -340,6 +368,7 @@ export const ModelRatioVisualEditor = memo(
           return {
             name,
             billingMode: 'tiered_expr',
+            modelBillingMode: normalizedModelBillingMode,
             billingExpr: pureExpr,
             requestRuleExpr,
             price,
@@ -365,6 +394,7 @@ export const ModelRatioVisualEditor = memo(
           audioRatio: audio,
           audioCompletionRatio: audioCompletion,
           billingMode: price !== '' ? 'per-request' : 'per-token',
+          modelBillingMode: normalizedModelBillingMode,
           hasConflict:
             price !== '' &&
             (ratio !== '' ||
@@ -380,6 +410,7 @@ export const ModelRatioVisualEditor = memo(
       return modelData.sort((a, b) => a.name.localeCompare(b.name))
     }, [
       modelPrice,
+      modelBillingMode,
       modelRatio,
       cacheRatio,
       createCacheRatio,
@@ -430,6 +461,7 @@ export const ModelRatioVisualEditor = memo(
               : model.price && model.price !== ''
                 ? 'per-request'
                 : 'per-token',
+          modelBillingMode: model.modelBillingMode,
           billingExpr: model.billingExpr,
           requestRuleExpr: model.requestRuleExpr,
         })
@@ -477,6 +509,10 @@ export const ModelRatioVisualEditor = memo(
           fallback: {},
           silent: true,
         })
+        const modelBillingModeMap = safeJsonParse<Record<string, string>>(
+          modelBillingMode,
+          { fallback: {}, silent: true }
+        )
         const cacheMap = safeJsonParse<Record<string, number>>(cacheRatio, {
           fallback: {},
           silent: true,
@@ -511,6 +547,7 @@ export const ModelRatioVisualEditor = memo(
         )
 
         delete priceMap[name]
+        delete modelBillingModeMap[name]
         delete ratioMap[name]
         delete cacheMap[name]
         delete createCacheMap[name]
@@ -522,6 +559,10 @@ export const ModelRatioVisualEditor = memo(
         delete billingExprMap[name]
 
         onChange('ModelPrice', JSON.stringify(priceMap, null, 2))
+        onChange(
+          'ModelBillingMode',
+          JSON.stringify(modelBillingModeMap, null, 2)
+        )
         onChange('ModelRatio', JSON.stringify(ratioMap, null, 2))
         onChange('CacheRatio', JSON.stringify(cacheMap, null, 2))
         onChange('CreateCacheRatio', JSON.stringify(createCacheMap, null, 2))
@@ -543,6 +584,7 @@ export const ModelRatioVisualEditor = memo(
       },
       [
         modelPrice,
+        modelBillingMode,
         modelRatio,
         cacheRatio,
         createCacheRatio,
@@ -624,6 +666,24 @@ export const ModelRatioVisualEditor = memo(
           filterFn: (row, id, value) =>
             filterBySelectedValues(row.getValue(id), value),
           meta: { label: t('Mode') },
+        },
+        {
+          accessorKey: 'modelBillingMode',
+          header: ({ column }) => (
+            <DataTableColumnHeader column={column} title={t('Task billing')} />
+          ),
+          cell: ({ row }) => (
+            <StatusBadge
+              label={t(getModelBillingModeLabel(row.original.modelBillingMode))}
+              variant={getModelBillingModeVariant(
+                row.original.modelBillingMode
+              )}
+              copyable={false}
+            />
+          ),
+          filterFn: (row, id, value) =>
+            filterBySelectedValues(row.getValue(id) || 'default', value),
+          meta: { label: t('Task billing') },
         },
         {
           id: 'priceSummary',
@@ -712,6 +772,10 @@ export const ModelRatioVisualEditor = memo(
           fallback: {},
           silent: true,
         })
+        const modelBillingModeMap = safeJsonParse<Record<string, string>>(
+          modelBillingMode,
+          { fallback: {}, silent: true }
+        )
         const cacheMap = safeJsonParse<Record<string, number>>(cacheRatio, {
           fallback: {},
           silent: true,
@@ -757,6 +821,7 @@ export const ModelRatioVisualEditor = memo(
 
         targetNames.forEach((name) => {
           delete priceMap[name]
+          delete modelBillingModeMap[name]
           delete ratioMap[name]
           delete cacheMap[name]
           delete createCacheMap[name]
@@ -799,9 +864,20 @@ export const ModelRatioVisualEditor = memo(
             setIfPresent(audioMap, name, data.audioRatio)
             setIfPresent(audioCompletionMap, name, data.audioCompletionRatio)
           }
+
+          if (
+            data.modelBillingMode === 'task' ||
+            data.modelBillingMode === 'second'
+          ) {
+            modelBillingModeMap[name] = data.modelBillingMode
+          }
         })
 
         onChange('ModelPrice', JSON.stringify(priceMap, null, 2))
+        onChange(
+          'ModelBillingMode',
+          JSON.stringify(modelBillingModeMap, null, 2)
+        )
         onChange('ModelRatio', JSON.stringify(ratioMap, null, 2))
         onChange('CacheRatio', JSON.stringify(cacheMap, null, 2))
         onChange('CreateCacheRatio', JSON.stringify(createCacheMap, null, 2))
@@ -823,6 +899,7 @@ export const ModelRatioVisualEditor = memo(
       },
       [
         modelPrice,
+        modelBillingMode,
         modelRatio,
         cacheRatio,
         createCacheRatio,

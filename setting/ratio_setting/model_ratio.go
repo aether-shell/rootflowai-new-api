@@ -1,9 +1,11 @@
 package ratio_setting
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 )
@@ -331,6 +333,12 @@ var defaultAudioCompletionRatio = map[string]float64{
 var modelPriceMap = types.NewRWMap[string, float64]()
 var modelRatioMap = types.NewRWMap[string, float64]()
 var completionRatioMap = types.NewRWMap[string, float64]()
+var modelBillingModeMap = types.NewRWMap[string, string]()
+
+const (
+	ModelBillingModeTask   = "task"
+	ModelBillingModeSecond = "second"
+)
 
 var defaultCompletionRatio = map[string]float64{
 	"gpt-4-gizmo-*":  2,
@@ -361,6 +369,46 @@ func ModelPrice2JSONString() string {
 
 func UpdateModelPriceByJSONString(jsonStr string) error {
 	return types.LoadFromJsonStringWithCallback(modelPriceMap, jsonStr, InvalidateExposedDataCache)
+}
+
+func ModelBillingMode2JSONString() string {
+	return modelBillingModeMap.MarshalJSONString()
+}
+
+func UpdateModelBillingModeByJSONString(jsonStr string) error {
+	parsed := map[string]string{}
+	if err := common.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		return err
+	}
+
+	normalized := make(map[string]string, len(parsed))
+	for modelName, mode := range parsed {
+		normalizedMode := strings.TrimSpace(strings.ToLower(mode))
+		if normalizedMode != ModelBillingModeTask && normalizedMode != ModelBillingModeSecond {
+			return fmt.Errorf("invalid ModelBillingMode for %s: %s", modelName, mode)
+		}
+		normalized[modelName] = normalizedMode
+	}
+
+	normalizedJSON, err := common.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	return types.LoadFromJsonStringWithCallback(modelBillingModeMap, string(normalizedJSON), InvalidateExposedDataCache)
+}
+
+func GetModelBillingMode(name string) (string, bool) {
+	name = FormatMatchingModelName(name)
+	mode, ok := modelBillingModeMap.Get(name)
+	return mode, ok
+}
+
+func IsTaskBillingModel(name string) bool {
+	mode, ok := GetModelBillingMode(name)
+	if ok {
+		return mode == ModelBillingModeTask
+	}
+	return common.StringsContains(constant.TaskPricePatches, name)
 }
 
 // GetModelPrice 返回模型的价格，如果模型不存在则返回-1，false
