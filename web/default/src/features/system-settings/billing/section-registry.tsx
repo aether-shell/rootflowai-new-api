@@ -57,6 +57,10 @@ const BILLING_SECTIONS = [
     titleKey: 'Quota Settings',
     build: (settings: BillingSettings) => (
       <QuotaSettingsSection
+        complianceConfirmed={
+          (settings['payment_setting.compliance_confirmed'] ?? false) &&
+          settings['payment_setting.compliance_terms_version'] === 'v1'
+        }
         defaultValues={{
           QuotaForNewUser: settings.QuotaForNewUser,
           PreConsumedQuota: settings.PreConsumedQuota,
@@ -128,6 +132,15 @@ const BILLING_SECTIONS = [
     titleKey: 'Payment Gateway',
     build: (settings: BillingSettings) => (
       <PaymentSettingsSection
+        complianceDefaults={{
+          confirmed: settings['payment_setting.compliance_confirmed'] ?? false,
+          termsVersion:
+            settings['payment_setting.compliance_terms_version'] ?? '',
+          confirmedAt:
+            settings['payment_setting.compliance_confirmed_at'] ?? 0,
+          confirmedBy:
+            settings['payment_setting.compliance_confirmed_by'] ?? 0,
+        }}
         defaultValues={{
           PayAddress: settings.PayAddress,
           EpayId: settings.EpayId,

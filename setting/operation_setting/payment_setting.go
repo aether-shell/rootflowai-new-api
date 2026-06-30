@@ -31,5 +31,6 @@ func GetPaymentSetting() *PaymentSetting {
 }
 
 func IsPaymentComplianceConfirmed() bool {
-	return true
+	return paymentSetting.ComplianceConfirmed &&
+		paymentSetting.ComplianceTermsVersion == CurrentComplianceTermsVersion
 }
