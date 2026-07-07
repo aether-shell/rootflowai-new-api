@@ -19,8 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 import { flexRender, type Cell, type Table } from '@tanstack/react-table'
 import { Database } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { formatTimestampToDate } from '@/lib/format'
-import { cn } from '@/lib/utils'
+
+import {
+  dotColorMap,
+  textColorMap,
+  type StatusVariant,
+} from '@/components/status-badge'
 import {
   Empty,
   EmptyDescription,
@@ -29,11 +33,9 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
-import {
-  dotColorMap,
-  textColorMap,
-  type StatusVariant,
-} from '@/components/status-badge'
+import { formatTimestampToDate } from '@/lib/format'
+import { cn } from '@/lib/utils'
+
 import { LOG_TYPE_ENUM } from '../constants'
 import { getLogTypeConfig } from '../lib/utils'
 import type { LogCategory } from '../types'
@@ -51,11 +53,6 @@ interface UsageLogsMobileListProps<TData> {
   emptyTitle?: string
   emptyDescription?: string
   logCategory: LogCategory
-}
-
-type CommonLogRow = {
-  created_at?: unknown
-  type?: unknown
 }
 
 function UsageLogsMobileSkeleton() {
@@ -187,17 +184,17 @@ function CommonLogsCard<TData>({
 
   const modelCell = cells.get('model_name')
   const quotaCell = cells.get('quota')
-  const original = cells.get('created_at')?.row.original as
-    | CommonLogRow
+  const rowData = cells.get('created_at')?.row.original as
+    | Record<string, unknown>
     | undefined
 
   return (
     <div className='space-y-2.5'>
-      <div className='flex min-w-0 items-start justify-between gap-3'>
+      <div className='flex min-w-0 items-center justify-between gap-3'>
         <CompactCell cell={modelCell} className='flex-1' />
         <CompactCell
           cell={quotaCell}
-          className='shrink-0 text-right [&_span]:!h-6 [&_span]:!px-2 [&_span]:!text-sm [&_span]:!leading-none'
+          className='shrink-0 text-right [&_.flex-col]:items-end'
         />
       </div>
 
@@ -207,14 +204,14 @@ function CommonLogsCard<TData>({
             {t('Time')}
           </div>
           <MobileLogTimeStatus
-            createdAt={original?.created_at}
-            type={original?.type}
+            createdAt={rowData?.created_at}
+            type={rowData?.type}
           />
         </div>
         <SummaryField
           label={t('Channel')}
           cell={cells.get('channel')}
-          primaryOnly
+          valueClassName='[&_.flex-col]:max-w-none'
         />
         <SummaryField label={t('User')} cell={cells.get('user')} primaryOnly />
         <SummaryField
