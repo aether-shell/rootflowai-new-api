@@ -64,10 +64,11 @@ func TestInitOnSlaveOnlyLoadsPolicies(t *testing.T) {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, db.AutoMigrate(&model.CasbinRule{}, &model.AuthzRole{}))
 
 	require.NoError(t, Init(db))
 
+	assert.True(t, db.Migrator().HasTable(&model.CasbinRule{}))
+	assert.True(t, db.Migrator().HasTable(&model.AuthzRole{}))
 	var roleCount int64
 	require.NoError(t, db.Model(&model.AuthzRole{}).Count(&roleCount).Error)
 	assert.Equal(t, int64(0), roleCount)
