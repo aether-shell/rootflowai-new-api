@@ -18,10 +18,8 @@ func TestApplyTaskOtherRatiosTaskModeDoesNotMultiplySeconds(t *testing.T) {
 		require.NoError(t, ratio_setting.UpdateModelBillingModeByJSONString(`{}`))
 	})
 
-	priceData := &types.PriceData{
-		Quota:       1000,
-		OtherRatios: map[string]float64{"seconds": 4},
-	}
+	priceData := &types.PriceData{Quota: 1000}
+	priceData.AddOtherRatio("seconds", 4)
 	ApplyTaskOtherRatios("fixed-video-model", priceData)
 
 	require.Equal(t, 1000, priceData.Quota)
@@ -36,10 +34,8 @@ func TestApplyTaskOtherRatiosSecondModeMultipliesSeconds(t *testing.T) {
 		require.NoError(t, ratio_setting.UpdateModelBillingModeByJSONString(`{}`))
 	})
 
-	priceData := &types.PriceData{
-		Quota:       1000,
-		OtherRatios: map[string]float64{"seconds": 6},
-	}
+	priceData := &types.PriceData{Quota: 1000}
+	priceData.AddOtherRatio("seconds", 6)
 	ApplyTaskOtherRatios("metered-video-model", priceData)
 
 	require.Equal(t, 6000, priceData.Quota)
@@ -54,17 +50,13 @@ func TestApplyTaskOtherRatiosFallsBackToTaskPricePatch(t *testing.T) {
 		require.NoError(t, ratio_setting.UpdateModelBillingModeByJSONString(`{}`))
 	})
 
-	taskPriceData := &types.PriceData{
-		Quota:       1000,
-		OtherRatios: map[string]float64{"seconds": 8},
-	}
+	taskPriceData := &types.PriceData{Quota: 1000}
+	taskPriceData.AddOtherRatio("seconds", 8)
 	ApplyTaskOtherRatios("legacy-fixed-video-model", taskPriceData)
 	require.Equal(t, 1000, taskPriceData.Quota)
 
-	secondPriceData := &types.PriceData{
-		Quota:       1000,
-		OtherRatios: map[string]float64{"seconds": 8},
-	}
+	secondPriceData := &types.PriceData{Quota: 1000}
+	secondPriceData.AddOtherRatio("seconds", 8)
 	ApplyTaskOtherRatios("unconfigured-video-model", secondPriceData)
 	require.Equal(t, 8000, secondPriceData.Quota)
 }

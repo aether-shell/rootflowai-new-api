@@ -109,7 +109,9 @@ jobs:
     name: Create multi-arch manifests
     needs: [build_single_arch]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+
+    permissions:
+      id-token: write
 
     steps:
       - name: Set version
@@ -134,6 +136,14 @@ jobs:
             -t rootflowai/new-api:latest \
             rootflowai/new-api:latest-amd64 \
             rootflowai/new-api:latest-arm64
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign manifests with cosign
+        run: |
+          cosign sign --yes rootflowai/new-api:${TAG}
+          cosign sign --yes rootflowai/new-api:latest
 
       - name: Manifest summary
         run: |
