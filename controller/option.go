@@ -34,6 +34,20 @@ func isPaymentComplianceOptionKey(key string) bool {
 	return strings.HasPrefix(key, "payment_setting.compliance_")
 }
 
+func paymentComplianceOptionValue(key string, value string) string {
+	if !operation_setting.IsPaymentComplianceConfirmed() {
+		return value
+	}
+	switch key {
+	case "payment_setting.compliance_confirmed":
+		return "true"
+	case "payment_setting.compliance_terms_version":
+		return operation_setting.CurrentComplianceTermsVersion
+	default:
+		return value
+	}
+}
+
 func isPositiveOptionValue(value string) bool {
 	intValue, err := strconv.Atoi(strings.TrimSpace(value))
 	if err == nil {
@@ -82,6 +96,9 @@ func GetOptions(c *gin.Context) {
 	common.OptionMapRWMutex.Lock()
 	for k, v := range common.OptionMap {
 		value := common.Interface2String(v)
+		if isPaymentComplianceOptionKey(k) {
+			value = paymentComplianceOptionValue(k, value)
+		}
 		isSensitiveKey := strings.HasSuffix(k, "Token") ||
 			strings.HasSuffix(k, "Secret") ||
 			strings.HasSuffix(k, "Key") ||
