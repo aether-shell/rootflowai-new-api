@@ -11,6 +11,7 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 	if info == nil || usage == nil {
 		return
 	}
+	usage.NormalizeCacheWriteTokens()
 
 	switch info.ChannelType {
 	case constant.ChannelTypeDeepSeek:

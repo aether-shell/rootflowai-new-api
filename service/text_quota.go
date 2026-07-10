@@ -210,6 +210,18 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	summary.CacheCreationTokens1h = usage.ClaudeCacheCreation1hTokens
 	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
 	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
+	if usage.CacheWriteTokensReported && !summary.IsClaudeUsageSemantic {
+		if !relayInfo.PriceData.CacheCreationRatioConfigured {
+			summary.CacheCreationRatio = 1
+			summary.CacheCreationRatio5m = 1
+			summary.CacheCreationRatio1h = 1
+		}
+		availableWriteTokens := summary.PromptTokens - summary.CacheTokens
+		if summary.CacheCreationTokens > availableWriteTokens {
+			logger.LogWarn(ctx, fmt.Sprintf("ignoring invalid cache write usage: prompt=%d cache_read=%d cache_write=%d model=%s", summary.PromptTokens, summary.CacheTokens, summary.CacheCreationTokens, summary.ModelName))
+			summary.CacheCreationTokens = 0
+		}
+	}
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&

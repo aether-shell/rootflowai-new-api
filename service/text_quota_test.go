@@ -368,6 +368,85 @@ func TestCalculateTextQuotaSummarySeparatesOpenRouterCacheCreationFromPromptBill
 	require.Equal(t, 3012, summary.Quota)
 }
 
+func TestCalculateTextQuotaSummaryUsesConfiguredOpenAICacheWriteRatio(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	tests := []struct {
+		name       string
+		configured bool
+		wantQuota  int
+		wantRatio  float64
+	}{
+		{name: "explicit GPT-5.6 ratio", configured: true, wantQuota: 3150, wantRatio: 1.25},
+		{name: "unconfigured older OpenAI model", configured: false, wantQuota: 3025, wantRatio: 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			relayInfo := &relaycommon.RelayInfo{
+				OriginModelName: "gpt-test",
+				PriceData: types.PriceData{
+					ModelRatio:                   2.5,
+					CompletionRatio:              6,
+					CacheRatio:                   0.1,
+					CacheCreationRatio:           1.25,
+					CacheCreationRatioConfigured: test.configured,
+					GroupRatioInfo:               types.GroupRatioInfo{GroupRatio: 1},
+				},
+				StartTime: time.Now(),
+			}
+			usage := &dto.Usage{
+				PromptTokens:     1000,
+				CompletionTokens: 50,
+				PromptTokensDetails: dto.InputTokenDetails{
+					CachedTokens:         100,
+					CachedCreationTokens: 200,
+				},
+				CacheWriteTokensReported: true,
+			}
+
+			summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+			require.Equal(t, 200, summary.CacheCreationTokens)
+			require.Equal(t, test.wantRatio, summary.CacheCreationRatio)
+			require.Equal(t, test.wantQuota, summary.Quota)
+		})
+	}
+}
+
+func TestCalculateTextQuotaSummaryRejectsInvalidOpenAICacheWriteBreakdown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-5.6-sol",
+		PriceData: types.PriceData{
+			ModelRatio:                   1,
+			CompletionRatio:              1,
+			CacheRatio:                   0.1,
+			CacheCreationRatio:           1.25,
+			CacheCreationRatioConfigured: true,
+			GroupRatioInfo:               types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+	usage := &dto.Usage{
+		PromptTokens: 100,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens:         80,
+			CachedCreationTokens: 30,
+		},
+		CacheWriteTokensReported: true,
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+
+	require.Zero(t, summary.CacheCreationTokens)
+	require.Equal(t, 28, summary.Quota)
+}
+
 func TestCalculateTextQuotaSummaryKeepsPrePRClaudeOpenRouterBilling(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

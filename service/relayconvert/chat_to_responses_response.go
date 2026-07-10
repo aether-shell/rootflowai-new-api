@@ -98,6 +98,7 @@ func UsageFromChatUsage(src *dto.Usage) *dto.Usage {
 	if src == nil {
 		return usage
 	}
+	src.NormalizeCacheWriteTokens()
 	if src.PromptTokens != 0 {
 		usage.PromptTokens = src.PromptTokens
 		usage.InputTokens = src.PromptTokens
@@ -119,6 +120,8 @@ func UsageFromChatUsage(src *dto.Usage) *dto.Usage {
 		details := src.PromptTokensDetails
 		usage.InputTokensDetails = &details
 	}
+	usage.CacheWriteTokensReported = src.CacheWriteTokensReported
+	usage.NormalizeCacheWriteTokens()
 	if src.CompletionTokenDetails.ReasoningTokens != 0 ||
 		src.CompletionTokenDetails.TextTokens != 0 ||
 		src.CompletionTokenDetails.AudioTokens != 0 ||

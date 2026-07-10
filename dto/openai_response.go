@@ -221,12 +221,17 @@ type CompletionsStreamResponse struct {
 }
 
 type Usage struct {
-	PromptTokens         int    `json:"prompt_tokens"`
-	CompletionTokens     int    `json:"completion_tokens"`
-	TotalTokens          int    `json:"total_tokens"`
-	PromptCacheHitTokens int    `json:"prompt_cache_hit_tokens,omitempty"`
-	UsageSemantic        string `json:"usage_semantic,omitempty"`
-	UsageSource          string `json:"usage_source,omitempty"`
+	PromptTokens             int    `json:"prompt_tokens"`
+	CompletionTokens         int    `json:"completion_tokens"`
+	TotalTokens              int    `json:"total_tokens"`
+	PromptCacheHitTokens     int    `json:"prompt_cache_hit_tokens,omitempty"`
+	CacheCreationTokens      int    `json:"cache_creation_tokens,omitempty"`
+	CacheWriteTokens         int    `json:"cache_write_tokens,omitempty"`
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"`
+	CacheWriteInputTokens    int    `json:"cache_write_input_tokens,omitempty"`
+	UsageSemantic            string `json:"usage_semantic,omitempty"`
+	UsageSource              string `json:"usage_source,omitempty"`
+	CacheWriteTokensReported bool   `json:"-"`
 
 	PromptTokensDetails    InputTokenDetails  `json:"prompt_tokens_details"`
 	CompletionTokenDetails OutputTokenDetails `json:"completion_tokens_details"`
@@ -255,9 +260,51 @@ type OpenAIVideoResponse struct {
 type InputTokenDetails struct {
 	CachedTokens         int `json:"cached_tokens"`
 	CachedCreationTokens int `json:"cached_creation_tokens,omitempty"`
+	CacheCreationTokens  int `json:"cache_creation_tokens,omitempty"`
+	CacheWriteTokens     int `json:"cache_write_tokens,omitempty"`
 	TextTokens           int `json:"text_tokens"`
 	AudioTokens          int `json:"audio_tokens"`
 	ImageTokens          int `json:"image_tokens"`
+}
+
+// NormalizeCacheWriteTokens folds provider aliases into the canonical cache
+// creation field used by billing. Aliases are alternatives, not additive.
+func (u *Usage) NormalizeCacheWriteTokens() {
+	if u == nil {
+		return
+	}
+
+	var inputCacheWriteTokens int
+	var inputCacheCreationTokens int
+	var inputLegacyCreationTokens int
+	if u.InputTokensDetails != nil {
+		inputCacheWriteTokens = u.InputTokensDetails.CacheWriteTokens
+		inputCacheCreationTokens = u.InputTokensDetails.CacheCreationTokens
+		inputLegacyCreationTokens = u.InputTokensDetails.CachedCreationTokens
+	}
+	candidates := []struct {
+		tokens   int
+		reported bool
+	}{
+		{tokens: u.PromptTokensDetails.CacheWriteTokens, reported: true},
+		{tokens: inputCacheWriteTokens, reported: true},
+		{tokens: u.CacheWriteTokens, reported: true},
+		{tokens: u.CacheWriteInputTokens, reported: true},
+		{tokens: u.PromptTokensDetails.CacheCreationTokens, reported: true},
+		{tokens: inputCacheCreationTokens, reported: true},
+		{tokens: u.CacheCreationInputTokens, reported: true},
+		{tokens: u.CacheCreationTokens, reported: true},
+		{tokens: u.PromptTokensDetails.CachedCreationTokens},
+		{tokens: inputLegacyCreationTokens},
+	}
+	for _, candidate := range candidates {
+		if candidate.tokens <= 0 {
+			continue
+		}
+		u.PromptTokensDetails.CachedCreationTokens = candidate.tokens
+		u.CacheWriteTokensReported = u.CacheWriteTokensReported || candidate.reported
+		return
+	}
 }
 
 type OutputTokenDetails struct {

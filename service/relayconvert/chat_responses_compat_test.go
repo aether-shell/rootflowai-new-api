@@ -86,6 +86,29 @@ func TestResponsesResponseToChatCompletionsPreservesTextAndToolCalls(t *testing.
 	assert.Equal(t, 7, usage.TotalTokens)
 }
 
+func TestUsageConversionsPreserveCacheWriteTokens(t *testing.T) {
+	responsesUsage := &dto.Usage{
+		InputTokens:  1000,
+		OutputTokens: 50,
+		TotalTokens:  1050,
+		InputTokensDetails: &dto.InputTokenDetails{
+			CachedTokens:     100,
+			CacheWriteTokens: 200,
+		},
+	}
+
+	chatUsage := UsageFromResponsesUsage(responsesUsage)
+	require.Equal(t, 100, chatUsage.PromptTokensDetails.CachedTokens)
+	require.Equal(t, 200, chatUsage.PromptTokensDetails.CachedCreationTokens)
+	require.True(t, chatUsage.CacheWriteTokensReported)
+
+	roundTrip := UsageFromChatUsage(chatUsage)
+	require.NotNil(t, roundTrip.InputTokensDetails)
+	require.Equal(t, 200, roundTrip.PromptTokensDetails.CachedCreationTokens)
+	require.Equal(t, 200, roundTrip.InputTokensDetails.CachedCreationTokens)
+	require.True(t, roundTrip.CacheWriteTokensReported)
+}
+
 func TestResponsesResponseToChatCompletionsPreservesReasoningSummary(t *testing.T) {
 	resp := &dto.OpenAIResponsesResponse{
 		ID:     "resp_1",
