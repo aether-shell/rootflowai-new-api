@@ -230,9 +230,7 @@ func initSmokeEnv(t *testing.T, dbPath string) {
 	common.PasswordLoginEnabled = true
 	common.PasswordRegisterEnabled = true
 	common.RegisterEnabled = true
-	common.UsingSQLite = false
-	common.UsingMySQL = false
-	common.UsingPostgreSQL = false
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	constant.StreamingTimeout = 300
 	constant.StreamScannerMaxBufferMB = 128
 
@@ -250,7 +248,7 @@ func initSmokeEnv(t *testing.T, dbPath string) {
 func newSmokeRouter() *gin.Engine {
 	engine := gin.New()
 	engine.Use(middleware.RequestId())
-	engine.Use(middleware.PoweredBy())
+	engine.Use(middleware.Version())
 
 	store := cookie.NewStore([]byte(common.SessionSecret))
 	store.Options(sessions.Options{
@@ -305,7 +303,7 @@ func runRelayRequest(t *testing.T, engine *gin.Engine, tokenKey string, modelNam
 	t.Helper()
 
 	payload, err := json.Marshal(map[string]any{
-		"model": modelName,
+		"model":  modelName,
 		"stream": true,
 		"messages": []map[string]string{
 			{
