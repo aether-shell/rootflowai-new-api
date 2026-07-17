@@ -14,6 +14,92 @@ func commonPointer[T any](value T) *T {
 	return &value
 }
 
+func TestClaudeStreamDiagnostic(t *testing.T) {
+	tests := []struct {
+		name       string
+		events     []dto.ClaudeResponse
+		completion int
+		wantStop   bool
+		incomplete bool
+		sequence   []string
+	}{
+		{
+			name:       "empty stream",
+			incomplete: true,
+		},
+		{
+			name:       "message start then eof",
+			events:     []dto.ClaudeResponse{{Type: "message_start"}},
+			incomplete: true,
+			sequence:   []string{"message_start"},
+		},
+		{
+			name: "empty text block then eof",
+			events: []dto.ClaudeResponse{
+				{Type: "message_start"},
+				{Type: "content_block_start", ContentBlock: &dto.ClaudeMediaMessage{Type: "text", Text: commonPointer("")}},
+			},
+			incomplete: true,
+			sequence:   []string{"message_start", "content_block_start:text"},
+		},
+		{
+			name: "text output",
+			events: []dto.ClaudeResponse{
+				{Type: "message_start"},
+				{Type: "content_block_delta", Delta: &dto.ClaudeMediaMessage{Type: "text_delta", Text: commonPointer("hello")}},
+			},
+			completion: 1,
+			sequence:   []string{"message_start", "content_block_delta:text_delta"},
+		},
+		{
+			name: "tool output",
+			events: []dto.ClaudeResponse{
+				{Type: "message_start"},
+				{Type: "content_block_start", ContentBlock: &dto.ClaudeMediaMessage{Type: "tool_use"}},
+			},
+			completion: 1,
+			sequence:   []string{"message_start", "content_block_start:tool_use"},
+		},
+		{
+			name: "complete zero output",
+			events: []dto.ClaudeResponse{
+				{Type: "message_start"},
+				{Type: "message_delta"},
+				{Type: "message_stop"},
+			},
+			wantStop: true,
+			sequence: []string{"message_start", "message_delta", "message_stop"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			diagnostic := &claudeStreamDiagnostic{}
+			for i := range tt.events {
+				diagnostic.record(&tt.events[i])
+			}
+
+			assert.Equal(t, len(tt.events), diagnostic.eventCount)
+			assert.Equal(t, tt.wantStop, diagnostic.messageStop)
+			assert.Equal(t, tt.incomplete, diagnostic.incompleteWithoutOutput(tt.completion))
+			assert.Equal(t, tt.sequence, diagnostic.eventSequence)
+		})
+	}
+}
+
+func TestClaudeStreamDiagnosticCapsSequenceAndNormalizesUnknownEvents(t *testing.T) {
+	diagnostic := &claudeStreamDiagnostic{}
+	for i := 0; i < maxClaudeDiagnosticEvents+4; i++ {
+		diagnostic.record(&dto.ClaudeResponse{Type: "untrusted-arbitrary-event-name"})
+	}
+
+	assert.Equal(t, maxClaudeDiagnosticEvents+4, diagnostic.eventCount)
+	assert.Len(t, diagnostic.eventSequence, maxClaudeDiagnosticEvents)
+	for _, label := range diagnostic.eventSequence {
+		assert.Equal(t, "unknown", label)
+	}
+}
+
 func TestResponseOpenAI2ClaudeToolUseInputIsObject(t *testing.T) {
 	tests := []struct {
 		name string

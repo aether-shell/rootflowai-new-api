@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -41,6 +42,56 @@ func ResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.OpenAITextRe
 }
 
 type ClaudeResponseInfo = relayconvert.ClaudeResponseInfo
+
+const maxClaudeDiagnosticEvents = 16
+
+type claudeStreamDiagnostic struct {
+	eventCount    int
+	messageStop   bool
+	eventSequence []string
+}
+
+func (d *claudeStreamDiagnostic) record(response *dto.ClaudeResponse) {
+	if d == nil || response == nil {
+		return
+	}
+
+	d.eventCount++
+	label := response.Type
+	switch response.Type {
+	case "message_start", "message_delta", "content_block_stop", "ping", "error":
+	case "message_stop":
+		d.messageStop = true
+	case "content_block_start":
+		subtype := "unknown"
+		if response.ContentBlock != nil {
+			switch response.ContentBlock.Type {
+			case "text", "thinking", "redacted_thinking", "tool_use", "server_tool_use", "web_search_tool_result":
+				subtype = response.ContentBlock.Type
+			}
+		}
+		label += ":" + subtype
+	case "content_block_delta":
+		subtype := "unknown"
+		if response.Delta != nil {
+			switch response.Delta.Type {
+			case "text_delta", "thinking_delta", "input_json_delta", "signature_delta":
+				subtype = response.Delta.Type
+			}
+		}
+		label += ":" + subtype
+	default:
+		label = "unknown"
+	}
+
+	if len(d.eventSequence) < maxClaudeDiagnosticEvents {
+		d.eventSequence = append(d.eventSequence, label)
+	}
+}
+
+func (d *claudeStreamDiagnostic) incompleteWithoutOutput(completionTokens int) bool {
+	return d != nil && completionTokens == 0 && !d.messageStop
+}
 
 func cacheCreationTokensForOpenAIUsage(usage *dto.Usage) int {
 	if usage == nil {
@@ -84,12 +135,17 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 }
 
 func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, data string) *types.NewAPIError {
+	return handleStreamResponseData(c, info, claudeInfo, data, nil)
+}
+
+func handleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, data string, diagnostic *claudeStreamDiagnostic) *types.NewAPIError {
 	var claudeResponse dto.ClaudeResponse
 	err := common.UnmarshalJsonStr(data, &claudeResponse)
 	if err != nil {
 		common.SysLog("error unmarshalling stream response: " + err.Error())
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
+	diagnostic.record(&claudeResponse)
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
@@ -180,8 +236,9 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		Usage:        &dto.Usage{},
 	}
 	var err *types.NewAPIError
+	diagnostic := &claudeStreamDiagnostic{eventSequence: make([]string, 0, maxClaudeDiagnosticEvents)}
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
-		err = HandleStreamResponseData(c, info, claudeInfo, data)
+		err = handleStreamResponseData(c, info, claudeInfo, data, diagnostic)
 		if err != nil {
 			sr.Stop(err)
 		}
@@ -191,6 +248,16 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
+	if diagnostic.incompleteWithoutOutput(claudeInfo.Usage.CompletionTokens) && info.StreamStatus != nil && info.StreamStatus.EndReason != relaycommon.StreamEndReasonClientGone {
+		logger.LogError(c, fmt.Sprintf(
+			"claude stream diagnostic: channel_id=%d upstream_status=%d end_reason=%s event_count=%d completion_tokens=0 message_stop=false sequence=%s",
+			info.ChannelId,
+			resp.StatusCode,
+			info.StreamStatus.EndReason,
+			diagnostic.eventCount,
+			strings.Join(diagnostic.eventSequence, ","),
+		))
+	}
 	return claudeInfo.Usage, nil
 }
 
