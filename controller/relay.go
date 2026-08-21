@@ -95,7 +95,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			if c.GetBool(common.ChannelErrorForUserKey) {
-				newAPIError = service.SanitizeChannelErrorForUser(requestId)
+				newAPIError = service.ChannelErrorForUser(newAPIError, requestId)
 			} else {
 				newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			}
@@ -104,7 +104,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				case types.RelayFormatClaude:
 					_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: newAPIError.ToClaudeError()})
 				case types.RelayFormatGemini:
-					_ = helper.ObjectData(c, gin.H{"error": gin.H{"code": http.StatusServiceUnavailable, "message": newAPIError.Error(), "status": "UNAVAILABLE"}})
+					status := "UNAVAILABLE"
+					if newAPIError.StatusCode == http.StatusForbidden {
+						status = "PERMISSION_DENIED"
+					}
+					_ = helper.ObjectData(c, gin.H{"error": gin.H{"code": newAPIError.StatusCode, "message": newAPIError.Error(), "status": status}})
 				default:
 					payload := gin.H{"error": newAPIError.ToOpenAIError()}
 					if strings.Contains(c.Request.URL.Path, "/responses") {
@@ -368,6 +372,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
+	if service.IsPublicContentAuditError(openaiErr) {
+		return false
+	}
 	if types.IsChannelError(openaiErr) {
 		return true
 	}
@@ -415,9 +422,10 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		if c.Request != nil && c.Request.URL != nil {
 			other["request_path"] = c.Request.URL.Path
 		}
-		other["error_type"] = types.ErrorCodeServiceUnavailable
-		other["error_code"] = types.ErrorCodeServiceUnavailable
-		other["status_code"] = http.StatusServiceUnavailable
+		userError := service.ChannelErrorForUser(err, "")
+		other["error_type"] = userError.GetErrorCode()
+		other["error_code"] = userError.GetErrorCode()
+		other["status_code"] = userError.StatusCode
 		adminInfo := make(map[string]interface{})
 		adminInfo["original_error"] = err.MaskSensitiveErrorWithStatusCode()
 		adminInfo["original_status_code"] = err.StatusCode
@@ -439,7 +447,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			startTime = time.Now()
 		}
 		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelError.ChannelId, modelName, tokenName, common.ChannelErrorUserMessage, tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+		model.RecordErrorLog(c, userId, channelError.ChannelId, modelName, tokenName, userError.Error(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
 
 }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -123,10 +125,16 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		_, hasLegacyChannelID := otherMap["channel_id"]
 		isChannelError := log.Type == LogTypeError && (log.ChannelId != 0 || hasLegacyChannelID)
 		if isChannelError {
-			log.Content = common.ChannelErrorUserMessage
-			otherMap["error_type"] = "service_unavailable"
-			otherMap["error_code"] = "service_unavailable"
-			otherMap["status_code"] = 503
+			if otherMap["error_code"] == string(relaytypes.ErrorCodeContentAuditBlocked) {
+				log.Content = common.ContentAuditUserMessage
+				otherMap["error_type"] = string(relaytypes.ErrorCodeContentAuditBlocked)
+				otherMap["status_code"] = http.StatusForbidden
+			} else {
+				log.Content = common.ChannelErrorUserMessage
+				otherMap["error_type"] = string(relaytypes.ErrorCodeServiceUnavailable)
+				otherMap["error_code"] = string(relaytypes.ErrorCodeServiceUnavailable)
+				otherMap["status_code"] = http.StatusServiceUnavailable
+			}
 		}
 		log.ChannelId = 0
 		log.ChannelName = ""

@@ -73,6 +73,38 @@ func TestFormatUserLogsSanitizesHistoricalChannelErrors(t *testing.T) {
 	require.NotContains(t, parsed, "channel_type")
 }
 
+func TestFormatUserLogsPreservesPublicContentAuditNotice(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"error_type":  "content_audit_blocked",
+		"error_code":  "content_audit_blocked",
+		"status_code": 403,
+		"admin_info": map[string]interface{}{
+			"original_error": "provider-specific policy metadata",
+		},
+	})
+	logs := []*Log{{
+		Type:              LogTypeError,
+		Content:           common.ContentAuditUserMessage,
+		ChannelId:         77,
+		ChannelName:       "vendor-a",
+		UpstreamRequestId: "upstream-secret",
+		Other:             other,
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, common.ContentAuditUserMessage, logs[0].Content)
+	require.Zero(t, logs[0].ChannelId)
+	require.Empty(t, logs[0].ChannelName)
+	require.Empty(t, logs[0].UpstreamRequestId)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.Equal(t, "content_audit_blocked", parsed["error_type"])
+	require.Equal(t, "content_audit_blocked", parsed["error_code"])
+	require.Equal(t, float64(403), parsed["status_code"])
+	require.NotContains(t, parsed, "admin_info")
+}
+
 func TestFormatUserLogsDoesNotReturnMalformedOtherOrChannelFields(t *testing.T) {
 	logs := []*Log{{
 		Type:              LogTypeError,
