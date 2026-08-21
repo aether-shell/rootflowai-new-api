@@ -10,7 +10,23 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
+
+func TestCaptureUpstreamRequestIDUsesPriorityAndHeadersAreNotCopied(t *testing.T) {
+	c := &gin.Context{}
+	header := http.Header{
+		"X-Request-Id":      []string{"generic-request"},
+		"Openai-Request-Id": []string{"openai-request"},
+	}
+
+	CaptureUpstreamRequestID(c, header)
+
+	require.Equal(t, "openai-request", c.GetString(common.UpstreamRequestIdKey))
+	require.False(t, ShouldCopyUpstreamHeader(c, "X-Request-ID", header.Values("X-Request-ID")))
+	require.False(t, ShouldCopyUpstreamHeader(c, "OpenAI-Request-ID", header.Values("OpenAI-Request-ID")))
+	require.True(t, ShouldCopyUpstreamHeader(c, "Content-Type", []string{"application/json"}))
+}
 
 func TestIOCopyBytesGracefullyStoresClientWriteError(t *testing.T) {
 	c := &gin.Context{}

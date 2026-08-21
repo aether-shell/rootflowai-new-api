@@ -87,13 +87,36 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			helper.WssError(c, ws, types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry()).ToOpenAIError())
 			return
 		}
+		c.Set(common.StreamResponseStartedKey, true)
 		defer ws.Close()
 	}
 
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
-			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			if c.GetBool(common.ChannelErrorForUserKey) {
+				newAPIError = service.SanitizeChannelErrorForUser(requestId)
+			} else {
+				newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			}
+			if c.GetBool(common.StreamResponseStartedKey) && relayFormat != types.RelayFormatOpenAIRealtime {
+				switch relayFormat {
+				case types.RelayFormatClaude:
+					_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: newAPIError.ToClaudeError()})
+				case types.RelayFormatGemini:
+					_ = helper.ObjectData(c, gin.H{"error": gin.H{"code": http.StatusServiceUnavailable, "message": newAPIError.Error(), "status": "UNAVAILABLE"}})
+				default:
+					payload := gin.H{"error": newAPIError.ToOpenAIError()}
+					if strings.Contains(c.Request.URL.Path, "/responses") {
+						payload["type"] = "error"
+						data, _ := common.Marshal(payload)
+						_ = helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "error"}, string(data))
+					} else {
+						_ = helper.ObjectData(c, payload)
+					}
+				}
+				return
+			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -194,6 +217,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		c.Set(common.UpstreamRequestIdKey, "")
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -202,6 +226,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		addUsedChannel(c, channel.Id)
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
+			c.Set(common.ChannelErrorForUserKey, true)
 			newAPIError = billingErr
 			break
 		}
@@ -217,6 +242,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		c.Set(common.ChannelErrorForUserKey, true)
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -314,9 +340,11 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	}
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 	if err != nil {
+		c.Set(common.ChannelErrorForUserKey, true)
 		return nil, types.NewError(fmt.Errorf("获取分组 %s 下模型 %s 的可用渠道失败（retry）: %s", selectGroup, info.OriginModelName, err.Error()), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 	if channel == nil {
+		c.Set(common.ChannelErrorForUserKey, true)
 		return nil, types.NewError(fmt.Errorf("分组 %s 下模型 %s 的可用渠道不存在（retry）", selectGroup, info.OriginModelName), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
 
@@ -324,6 +352,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 
 	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName)
 	if newAPIError != nil {
+		c.Set(common.ChannelErrorForUserKey, true)
 		return nil, newAPIError
 	}
 	return channel, nil
@@ -331,6 +360,9 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	if openaiErr == nil {
+		return false
+	}
+	if c.GetBool(common.StreamResponseStartedKey) {
 		return false
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
@@ -362,7 +394,8 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
-	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
+	upstreamRequestID := c.GetString(common.UpstreamRequestIdKey)
+	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d, upstream request id: %s): %s", channelError.ChannelId, err.StatusCode, upstreamRequestID, common.LocalLogPreview(err.Error())))
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
 	if service.ShouldDisableChannel(err) && channelError.AutoBan {
@@ -378,18 +411,21 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		modelName := c.GetString("original_model")
 		tokenId := c.GetInt("token_id")
 		userGroup := c.GetString("group")
-		channelId := c.GetInt("channel_id")
 		other := make(map[string]interface{})
 		if c.Request != nil && c.Request.URL != nil {
 			other["request_path"] = c.Request.URL.Path
 		}
-		other["error_type"] = err.GetErrorType()
-		other["error_code"] = err.GetErrorCode()
-		other["status_code"] = err.StatusCode
-		other["channel_id"] = channelId
-		other["channel_name"] = c.GetString("channel_name")
-		other["channel_type"] = c.GetInt("channel_type")
+		other["error_type"] = types.ErrorCodeServiceUnavailable
+		other["error_code"] = types.ErrorCodeServiceUnavailable
+		other["status_code"] = http.StatusServiceUnavailable
 		adminInfo := make(map[string]interface{})
+		adminInfo["original_error"] = err.MaskSensitiveErrorWithStatusCode()
+		adminInfo["original_status_code"] = err.StatusCode
+		adminInfo["original_error_type"] = err.GetErrorType()
+		adminInfo["original_error_code"] = err.GetErrorCode()
+		adminInfo["channel_id"] = channelError.ChannelId
+		adminInfo["channel_name"] = channelError.ChannelName
+		adminInfo["channel_type"] = channelError.ChannelType
 		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
 		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)
 		if isMultiKey {
@@ -403,7 +439,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			startTime = time.Now()
 		}
 		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+		model.RecordErrorLog(c, userId, channelError.ChannelId, modelName, tokenName, common.ChannelErrorUserMessage, tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
 
 }

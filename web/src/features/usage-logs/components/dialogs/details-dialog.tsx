@@ -500,6 +500,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const showAdminIp =
     !!props.log.ip && (showTiming || (props.isAdmin && isTopup))
   const adminInfo = other?.admin_info
+  const originalError =
+    props.isAdmin && props.log.type === 5
+      ? adminInfo?.original_error || details
+      : ''
   const topupAuditFields =
     isTopup && props.isAdmin && adminInfo
       ? ([
@@ -636,7 +640,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
       contentHeight='min(72dvh, 720px)'
       bodyClassName='pr-2 sm:pr-4'
     >
-      <div className='w-full max-w-full min-w-0 space-y-2.5 overflow-x-hidden py-1 sm:space-y-3'>
+      <div className='w-full min-w-0 max-w-full space-y-2.5 overflow-x-hidden py-1 sm:space-y-3'>
         {/* Overview section - key identifiers */}
         <div className='min-w-0 space-y-1'>
           {props.log.request_id && (
@@ -646,9 +650,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
               mono
             />
           )}
-          {props.log.upstream_request_id && (
+          {props.isAdmin && props.log.upstream_request_id && (
             <DetailRow
-              label={t('Upstream Request ID')}
+              label={t('Channel Request ID')}
               value={props.log.upstream_request_id}
               mono
             />
@@ -738,6 +742,62 @@ export function DetailsDialog(props: DetailsDialogProps) {
           )}
         </div>
 
+        {originalError && (
+          <DetailSection
+            icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}
+            label={t('Original Error (Admin Only)')}
+            variant='danger'
+          >
+            <div className='relative min-w-0'>
+              <Button
+                variant='ghost'
+                size='sm'
+                className='absolute right-0 top-0 h-5 w-5 p-0'
+                onClick={() => copyToClipboard(originalError)}
+                title={t('Copy to clipboard')}
+                aria-label={t('Copy to clipboard')}
+              >
+                {copiedText === originalError ? (
+                  <Check className='size-3 text-green-600' />
+                ) : (
+                  <Copy className='size-3' />
+                )}
+              </Button>
+              <p className='sm:wrap-break-word min-w-0 whitespace-pre-wrap break-all pr-6 font-mono text-xs leading-relaxed'>
+                {originalError}
+              </p>
+            </div>
+            {adminInfo?.original_status_code != null && (
+              <DetailRow
+                label={t('Original Status Code')}
+                value={String(adminInfo.original_status_code)}
+                mono
+              />
+            )}
+            {adminInfo?.original_error_type && (
+              <DetailRow
+                label={t('Original Error Type')}
+                value={adminInfo.original_error_type}
+                mono
+              />
+            )}
+            {adminInfo?.original_error_code && (
+              <DetailRow
+                label={t('Original Error Code')}
+                value={adminInfo.original_error_code}
+                mono
+              />
+            )}
+            {adminInfo?.channel_type != null && (
+              <DetailRow
+                label={t('Channel Type')}
+                value={String(adminInfo.channel_type)}
+                mono
+              />
+            )}
+          </DetailSection>
+        )}
+
         {/* Request conversion (admin only, not for refund) */}
         {showConversion && (
           <DetailSection label={t('Request Conversion')}>
@@ -745,7 +805,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
               <Button
                 variant='ghost'
                 size='sm'
-                className='absolute top-0 right-0 h-5 w-5 p-0'
+                className='absolute right-0 top-0 h-5 w-5 p-0'
                 onClick={() => copyToClipboard(conversionLabel)}
                 title={t('Copy to clipboard')}
                 aria-label={t('Copy to clipboard')}
@@ -769,7 +829,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
                     className='text-muted-foreground size-3'
                     aria-hidden='true'
                   />
-                  <span className='min-w-0 break-all sm:wrap-break-word'>
+                  <span className='sm:wrap-break-word min-w-0 break-all'>
                     {conversionLabel}
                   </span>
                 </div>
@@ -785,7 +845,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
             label={t('Quota clamped')}
             variant='danger'
           >
-            <p className='mb-1 text-xs wrap-break-word'>
+            <p className='wrap-break-word mb-1 text-xs'>
               {t('Quota saturation protection triggered')}
             </p>
             <DetailRow
@@ -820,7 +880,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
             label={t('Reject Reason')}
             variant='danger'
           >
-            <p className='text-xs wrap-break-word'>{other.reject_reason}</p>
+            <p className='wrap-break-word text-xs'>{other.reject_reason}</p>
           </DetailSection>
         )}
 
@@ -1140,7 +1200,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
             )}
             {Array.isArray(other.stream_status.errors) &&
               other.stream_status.errors.length > 0 && (
-                <pre className='bg-background/60 mt-1 max-h-32 overflow-y-auto rounded border p-2 font-mono text-[11px] leading-relaxed wrap-break-word whitespace-pre-wrap'>
+                <pre className='bg-background/60 wrap-break-word mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap rounded border p-2 font-mono text-[11px] leading-relaxed'>
                   {other.stream_status.errors.join('\n')}
                 </pre>
               )}
@@ -1216,7 +1276,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
                     className='shrink-0 font-medium'
                     copyable={false}
                   />
-                  <span className='min-w-0 font-mono text-[11px] leading-relaxed break-all sm:wrap-break-word'>
+                  <span className='sm:wrap-break-word min-w-0 break-all font-mono text-[11px] leading-relaxed'>
                     {parsed.content}
                   </span>
                 </div>
@@ -1233,7 +1293,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
               <Button
                 variant='ghost'
                 size='sm'
-                className='absolute top-1.5 right-1.5 h-5 w-5 p-0'
+                className='absolute right-1.5 top-1.5 h-5 w-5 p-0'
                 onClick={() => copyToClipboard(details)}
                 title={t('Copy to clipboard')}
                 aria-label={t('Copy to clipboard')}
@@ -1244,7 +1304,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
                   <Copy className='size-3' />
                 )}
               </Button>
-              <p className='min-w-0 pr-6 text-xs leading-relaxed break-all whitespace-pre-wrap sm:wrap-break-word'>
+              <p className='sm:wrap-break-word min-w-0 whitespace-pre-wrap break-all pr-6 text-xs leading-relaxed'>
                 {details}
               </p>
             </div>

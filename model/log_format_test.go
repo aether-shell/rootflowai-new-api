@@ -33,3 +33,61 @@ func TestFormatUserLogsStripsQuotaSaturation(t *testing.T) {
 	// Non-admin billing fields remain visible.
 	require.Contains(t, parsed, "model_price")
 }
+
+func TestFormatUserLogsSanitizesHistoricalChannelErrors(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"error_type":   "openai_error",
+		"error_code":   "insufficient_balance",
+		"status_code":  402,
+		"channel_id":   77,
+		"channel_name": "vendor-a",
+		"channel_type": 1,
+		"admin_info": map[string]interface{}{
+			"original_error": "balance exhausted",
+			"use_channel":    []int{77, 88},
+		},
+	})
+	logs := []*Log{{
+		Type:              LogTypeError,
+		Content:           "status_code=402, balance exhausted",
+		ChannelId:         77,
+		ChannelName:       "vendor-a",
+		UpstreamRequestId: "upstream-secret",
+		Other:             other,
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, common.ChannelErrorUserMessage, logs[0].Content)
+	require.Zero(t, logs[0].ChannelId)
+	require.Empty(t, logs[0].ChannelName)
+	require.Empty(t, logs[0].UpstreamRequestId)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.Equal(t, "service_unavailable", parsed["error_type"])
+	require.Equal(t, "service_unavailable", parsed["error_code"])
+	require.Equal(t, float64(503), parsed["status_code"])
+	require.NotContains(t, parsed, "admin_info")
+	require.NotContains(t, parsed, "channel_id")
+	require.NotContains(t, parsed, "channel_name")
+	require.NotContains(t, parsed, "channel_type")
+}
+
+func TestFormatUserLogsDoesNotReturnMalformedOtherOrChannelFields(t *testing.T) {
+	logs := []*Log{{
+		Type:              LogTypeError,
+		ChannelId:         9,
+		ChannelName:       "vendor-b",
+		UpstreamRequestId: "request-secret",
+		Other:             "not-json",
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Zero(t, logs[0].ChannelId)
+	require.Empty(t, logs[0].ChannelName)
+	require.Empty(t, logs[0].UpstreamRequestId)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.Equal(t, "service_unavailable", parsed["error_code"])
+}

@@ -33,13 +33,40 @@ func ShouldCopyUpstreamHeader(c *gin.Context, k string, v []string) bool {
 	if strings.EqualFold(k, "Content-Length") {
 		return false
 	}
-	if strings.EqualFold(k, common.RequestIdKey) {
-		if c != nil && len(v) > 0 {
-			c.Set(common.UpstreamRequestIdKey, v[0])
-		}
+	if isUpstreamRequestIDHeader(k) {
 		return false
 	}
 	return true
+}
+
+var upstreamRequestIDHeaders = []string{
+	common.RequestIdKey,
+	"OpenAI-Request-ID",
+	"X-Request-ID",
+	"Request-ID",
+	"X-Amzn-RequestId",
+	"X-Goog-Request-ID",
+}
+
+func isUpstreamRequestIDHeader(name string) bool {
+	for _, candidate := range upstreamRequestIDHeaders {
+		if strings.EqualFold(name, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func CaptureUpstreamRequestID(c *gin.Context, header http.Header) {
+	if c == nil {
+		return
+	}
+	for _, name := range upstreamRequestIDHeaders {
+		if value := strings.TrimSpace(header.Get(name)); value != "" {
+			c.Set(common.UpstreamRequestIdKey, value)
+			return
+		}
+	}
 }
 
 func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) error {
@@ -54,6 +81,7 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) erro
 	// So the httpClient will be confused by the response.
 	// For example, Postman will report error, and we cannot check the response at all.
 	if src != nil {
+		CaptureUpstreamRequestID(c, src.Header)
 		for k, v := range src.Header {
 			if !ShouldCopyUpstreamHeader(c, k, v) {
 				continue

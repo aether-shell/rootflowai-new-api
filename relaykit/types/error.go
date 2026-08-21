@@ -50,6 +50,7 @@ const (
 	ErrorCodeDoRequestFailed    ErrorCode = "do_request_failed"
 	ErrorCodeGetChannelFailed   ErrorCode = "get_channel_failed"
 	ErrorCodeGenRelayInfoFailed ErrorCode = "gen_relay_info_failed"
+	ErrorCodeServiceUnavailable ErrorCode = "service_unavailable"
 
 	// channel error
 	ErrorCodeChannelNoAvailableKey        ErrorCode = "channel:no_available_key"
@@ -96,6 +97,18 @@ type NewAPIError struct {
 	errorCode      ErrorCode
 	StatusCode     int
 	Metadata       json.RawMessage
+}
+
+func NewServiceUnavailableError(message string) *NewAPIError {
+	if strings.TrimSpace(message) == "" {
+		message = string(ErrorCodeServiceUnavailable)
+	}
+	return &NewAPIError{
+		Err:        errors.New(message),
+		errorType:  ErrorType(ErrorCodeServiceUnavailable),
+		errorCode:  ErrorCodeServiceUnavailable,
+		StatusCode: http.StatusServiceUnavailable,
+	}
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.

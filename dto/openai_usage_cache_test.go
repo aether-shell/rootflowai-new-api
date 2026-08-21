@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	relaydto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,7 +55,7 @@ func TestUsageNormalizeCacheWriteTokens(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			var usage Usage
+			var usage relaydto.Usage
 			require.NoError(t, common.Unmarshal([]byte(test.payload), &usage))
 
 			usage.NormalizeCacheWriteTokens()

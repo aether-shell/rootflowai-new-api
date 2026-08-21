@@ -115,17 +115,32 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 
 func formatUserLogs(logs []*Log, startIdx int) {
 	for i := range logs {
-		logs[i].ChannelName = ""
-		var otherMap map[string]interface{}
-		otherMap, _ = common.StrToMap(logs[i].Other)
-		if otherMap != nil {
-			// Remove admin-only debug fields.
-			delete(otherMap, "admin_info")
-			// Remove operation-audit details (operator/route info), admin-only.
-			delete(otherMap, "audit_info")
-			// delete(otherMap, "reject_reason")
-			// delete(otherMap, "stream_status")
+		log := logs[i]
+		otherMap, err := common.StrToMap(log.Other)
+		if err != nil || otherMap == nil {
+			otherMap = map[string]interface{}{}
 		}
+		_, hasLegacyChannelID := otherMap["channel_id"]
+		isChannelError := log.Type == LogTypeError && (log.ChannelId != 0 || hasLegacyChannelID)
+		if isChannelError {
+			log.Content = common.ChannelErrorUserMessage
+			otherMap["error_type"] = "service_unavailable"
+			otherMap["error_code"] = "service_unavailable"
+			otherMap["status_code"] = 503
+		}
+		log.ChannelId = 0
+		log.ChannelName = ""
+		log.UpstreamRequestId = ""
+		delete(otherMap, "admin_info")
+		delete(otherMap, "audit_info")
+		delete(otherMap, "channel_id")
+		delete(otherMap, "channel_name")
+		delete(otherMap, "channel_type")
+		delete(otherMap, "use_channel")
+		delete(otherMap, "channel_affinity")
+		delete(otherMap, "is_multi_key")
+		delete(otherMap, "multi_key_index")
+		delete(otherMap, "upstream_request_id")
 		logs[i].Other = common.MapToJsonStr(otherMap)
 	}
 	assignDisplayLogIds(logs, startIdx)

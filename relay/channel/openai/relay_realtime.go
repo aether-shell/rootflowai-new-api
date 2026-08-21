@@ -34,6 +34,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	usage := &dto.RealtimeUsage{}
 	localUsage := &dto.RealtimeUsage{}
 	sumUsage := &dto.RealtimeUsage{}
+	var upstreamError *types.NewAPIError
 
 	gopool.Go(func() {
 		defer func() {
@@ -59,6 +60,11 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 				err = common.Unmarshal(message, realtimeEvent)
 				if err != nil {
 					errChan <- fmt.Errorf("error unmarshalling message: %v", err)
+					return
+				}
+				if realtimeEvent.Type == dto.RealtimeEventTypeError && realtimeEvent.Error != nil {
+					upstreamError = types.WithOpenAIError(*realtimeEvent.Error, 500)
+					errChan <- upstreamError
 					return
 				}
 
@@ -220,7 +226,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 
 	// check usage total tokens, if 0, use local usage
 
-	return nil, sumUsage
+	return upstreamError, sumUsage
 }
 
 func preConsumeUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.RealtimeUsage, totalUsage *dto.RealtimeUsage) error {

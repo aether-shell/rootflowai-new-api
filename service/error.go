@@ -16,6 +16,8 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+
+	"github.com/gin-gonic/gin"
 )
 
 func MidjourneyErrorWrapper(code int, desc string) *taskdto.MidjourneyResponse {
@@ -135,6 +137,11 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
 	return
+}
+
+func RelayErrorHandlerForRequest(c *gin.Context, resp *http.Response, showBodyWhenFail bool) *types.NewAPIError {
+	CaptureUpstreamRequestID(c, resp.Header)
+	return RelayErrorHandler(c.Request.Context(), resp, showBodyWhenFail)
 }
 
 func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) {

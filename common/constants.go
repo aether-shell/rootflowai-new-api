@@ -171,8 +171,11 @@ var GeminiSafetySetting string
 var CohereSafetySetting string
 
 const (
-	RequestIdKey         = "X-Oneapi-Request-Id"
-	UpstreamRequestIdKey = "X-Upstream-Request-Id"
+	RequestIdKey             = "X-Oneapi-Request-Id"
+	UpstreamRequestIdKey     = "X-Upstream-Request-Id"
+	ChannelErrorForUserKey   = "channel_error_for_user"
+	ChannelErrorUserMessage  = "暂时无法完成此请求，请稍后重试"
+	StreamResponseStartedKey = "stream_response_started"
 )
 
 const (

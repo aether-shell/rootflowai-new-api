@@ -117,7 +117,14 @@ export interface LogOtherData {
   admin_info?: {
     is_multi_key?: boolean
     multi_key_index?: number
-    use_channel?: number[]
+    use_channel?: Array<number | string>
+    original_error?: string
+    original_status_code?: number
+    original_error_type?: string
+    original_error_code?: string
+    channel_id?: number
+    channel_name?: string
+    channel_type?: number
     local_count_tokens?: boolean
     usage_billing_path?: UsageBillingPath | string
     channel_affinity?: ChannelAffinityInfo
