@@ -162,6 +162,71 @@ func TestFormatUserLogsReclassifiesHistoricalCyberPolicyAsAudit(t *testing.T) {
 	require.Equal(t, float64(403), parsed["status_code"])
 }
 
+func TestFormatUserLogsRestoresSanitizedBadRequest(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"error_type":  "service_unavailable",
+		"error_code":  "service_unavailable",
+		"status_code": 503,
+		"admin_info": map[string]interface{}{
+			"original_error":       `status_code=400, Thinking level MINIMAL is not supported (request id: channel-123456) ({"route":"internal"})`,
+			"original_error_type":  "invalid_request_error",
+			"original_error_code":  "unsupported_thinking_level",
+			"original_status_code": 400,
+		},
+	})
+	logs := []*Log{{
+		Type:              LogTypeError,
+		Content:           common.ChannelErrorUserMessage,
+		ChannelId:         77,
+		ChannelName:       "vendor-a",
+		UpstreamRequestId: "channel-123456",
+		Other:             other,
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, "Thinking level MINIMAL is not supported", logs[0].Content)
+	require.Zero(t, logs[0].ChannelId)
+	require.Empty(t, logs[0].ChannelName)
+	require.Empty(t, logs[0].UpstreamRequestId)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.Equal(t, "invalid_request_error", parsed["error_type"])
+	require.Equal(t, "unsupported_thinking_level", parsed["error_code"])
+	require.Equal(t, float64(400), parsed["status_code"])
+	require.NotContains(t, parsed, "admin_info")
+}
+
+func TestFormatUserLogsNormalizesRateLimit(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"error_type":  "service_unavailable",
+		"error_code":  "service_unavailable",
+		"status_code": 503,
+		"admin_info": map[string]interface{}{
+			"original_error":       "status_code=429, vendor account pool exhausted",
+			"original_error_type":  "rate_limit_error",
+			"original_error_code":  "vendor_quota_exhausted",
+			"original_status_code": 429,
+		},
+	})
+	logs := []*Log{{
+		Type:      LogTypeError,
+		Content:   common.ChannelErrorUserMessage,
+		ChannelId: 77,
+		Other:     other,
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, common.ChannelRateLimitMessage, logs[0].Content)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.Equal(t, "rate_limit_exceeded", parsed["error_type"])
+	require.Equal(t, "rate_limit_exceeded", parsed["error_code"])
+	require.Equal(t, float64(429), parsed["status_code"])
+	require.NotContains(t, parsed, "admin_info")
+}
+
 func TestFormatUserLogsDoesNotReturnMalformedOtherOrChannelFields(t *testing.T) {
 	logs := []*Log{{
 		Type:              LogTypeError,

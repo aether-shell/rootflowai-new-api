@@ -76,8 +76,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	//originalModel := common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
 
 	var (
-		newAPIError *types.NewAPIError
-		ws          *websocket.Conn
+		newAPIError        *types.NewAPIError
+		publicChannelError *types.NewAPIError
+		ws                 *websocket.Conn
 	)
 
 	if relayFormat == types.RelayFormatOpenAIRealtime {
@@ -94,23 +95,31 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	defer func() {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			responseError := newAPIError
+			if publicChannelError != nil {
+				responseError = publicChannelError
+			}
 			if c.GetBool(common.ChannelErrorForUserKey) {
-				newAPIError = service.ChannelErrorForUser(newAPIError, requestId)
+				responseError = service.ChannelErrorForUser(responseError, requestId)
 			} else {
-				newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+				responseError.SetMessage(common.MessageWithRequestId(responseError.Error(), requestId))
 			}
 			if c.GetBool(common.StreamResponseStartedKey) && relayFormat != types.RelayFormatOpenAIRealtime {
 				switch relayFormat {
 				case types.RelayFormatClaude:
-					_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: newAPIError.ToClaudeError()})
+					_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: responseError.ToClaudeError()})
 				case types.RelayFormatGemini:
 					status := "UNAVAILABLE"
-					if newAPIError.StatusCode == http.StatusForbidden {
+					if responseError.StatusCode == http.StatusForbidden {
 						status = "PERMISSION_DENIED"
+					} else if responseError.StatusCode == http.StatusBadRequest {
+						status = "INVALID_ARGUMENT"
+					} else if responseError.StatusCode == http.StatusTooManyRequests {
+						status = "RESOURCE_EXHAUSTED"
 					}
-					_ = helper.ObjectData(c, gin.H{"error": gin.H{"code": newAPIError.StatusCode, "message": newAPIError.Error(), "status": status}})
+					_ = helper.ObjectData(c, gin.H{"error": gin.H{"code": responseError.StatusCode, "message": responseError.Error(), "status": status}})
 				default:
-					payload := gin.H{"error": newAPIError.ToOpenAIError()}
+					payload := gin.H{"error": responseError.ToOpenAIError()}
 					if strings.Contains(c.Request.URL.Path, "/responses") {
 						payload["type"] = "error"
 						data, _ := common.Marshal(payload)
@@ -123,15 +132,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
-				helper.WssError(c, ws, newAPIError.ToOpenAIError())
+				helper.WssError(c, ws, responseError.ToOpenAIError())
 			case types.RelayFormatClaude:
-				c.JSON(newAPIError.StatusCode, gin.H{
+				c.JSON(responseError.StatusCode, gin.H{
 					"type":  "error",
-					"error": newAPIError.ToClaudeError(),
+					"error": responseError.ToClaudeError(),
 				})
 			default:
-				c.JSON(newAPIError.StatusCode, gin.H{
-					"error": newAPIError.ToOpenAIError(),
+				c.JSON(responseError.StatusCode, gin.H{
+					"error": responseError.ToOpenAIError(),
 				})
 			}
 		}
@@ -218,6 +227,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+	var lastPublicBadRequest *types.NewAPIError
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
@@ -266,6 +276,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
+		if service.IsPublicChannelBadRequest(newAPIError) {
+			lastPublicBadRequest = newAPIError
+		}
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
@@ -273,6 +286,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 	}
+	publicChannelError = preferredChannelErrorForUser(newAPIError, lastPublicBadRequest)
 
 	useChannel := c.GetStringSlice("use_channel")
 	if len(useChannel) > 1 {
@@ -360,6 +374,13 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 		return nil, newAPIError
 	}
 	return channel, nil
+}
+
+func preferredChannelErrorForUser(current *types.NewAPIError, lastBadRequest *types.NewAPIError) *types.NewAPIError {
+	if current == nil || lastBadRequest == nil || service.IsPublicContentAuditError(current) {
+		return nil
+	}
+	return lastBadRequest
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {

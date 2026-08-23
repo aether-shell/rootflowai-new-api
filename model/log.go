@@ -126,10 +126,13 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		isChannelError := log.Type == LogTypeError && (log.ChannelId != 0 || hasLegacyChannelID)
 		if isChannelError {
 			isContentAudit := otherMap["error_code"] == string(relaytypes.ErrorCodeContentAuditBlocked)
+			var originalError, originalErrorType, originalErrorCode, originalStatusCode interface{}
 			if adminInfo, ok := otherMap["admin_info"].(map[string]interface{}); ok {
-				originalError, hasOriginalError := adminInfo["original_error"]
-				originalErrorType, hasOriginalErrorType := adminInfo["original_error_type"]
-				originalErrorCode, hasOriginalErrorCode := adminInfo["original_error_code"]
+				var hasOriginalError, hasOriginalErrorType, hasOriginalErrorCode bool
+				originalError, hasOriginalError = adminInfo["original_error"]
+				originalErrorType, hasOriginalErrorType = adminInfo["original_error_type"]
+				originalErrorCode, hasOriginalErrorCode = adminInfo["original_error_code"]
+				originalStatusCode = adminInfo["original_status_code"]
 				if hasOriginalError || hasOriginalErrorType || hasOriginalErrorCode {
 					structured := fmt.Sprintf("%v %v", originalErrorType, originalErrorCode)
 					isContentAudit = common.IsExplicitContentAuditError(structured, fmt.Sprint(originalError))
@@ -140,6 +143,28 @@ func formatUserLogs(logs []*Log, startIdx int) {
 				otherMap["error_type"] = string(relaytypes.ErrorCodeContentAuditBlocked)
 				otherMap["error_code"] = string(relaytypes.ErrorCodeContentAuditBlocked)
 				otherMap["status_code"] = http.StatusForbidden
+			} else if fmt.Sprint(originalStatusCode) == fmt.Sprint(http.StatusBadRequest) {
+				message := common.SanitizeChannelErrorMessageForUser(fmt.Sprint(originalError))
+				if message == "" || message == "<nil>" {
+					message = common.ChannelBadRequestMessage
+				}
+				errorType := strings.TrimSpace(fmt.Sprint(originalErrorType))
+				if errorType == "" || errorType == "<nil>" {
+					errorType = "invalid_request_error"
+				}
+				errorCode := strings.TrimSpace(fmt.Sprint(originalErrorCode))
+				if errorCode == "" || errorCode == "<nil>" {
+					errorCode = string(relaytypes.ErrorCodeInvalidRequest)
+				}
+				log.Content = message
+				otherMap["error_type"] = errorType
+				otherMap["error_code"] = errorCode
+				otherMap["status_code"] = http.StatusBadRequest
+			} else if fmt.Sprint(originalStatusCode) == fmt.Sprint(http.StatusTooManyRequests) {
+				log.Content = common.ChannelRateLimitMessage
+				otherMap["error_type"] = string(relaytypes.ErrorCodeRateLimitExceeded)
+				otherMap["error_code"] = string(relaytypes.ErrorCodeRateLimitExceeded)
+				otherMap["status_code"] = http.StatusTooManyRequests
 			} else {
 				log.Content = common.ChannelErrorUserMessage
 				otherMap["error_type"] = string(relaytypes.ErrorCodeServiceUnavailable)

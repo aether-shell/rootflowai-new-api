@@ -47,20 +47,101 @@ func IsPublicContentAuditError(err *types.NewAPIError) bool {
 	return common.IsExplicitContentAuditError(structured, message)
 }
 
-func ChannelErrorForUser(err *types.NewAPIError, requestID string) *types.NewAPIError {
-	if !IsPublicContentAuditError(err) {
-		return SanitizeChannelErrorForUser(requestID)
+func IsPublicChannelBadRequest(err *types.NewAPIError) bool {
+	return err != nil && err.StatusCode == http.StatusBadRequest && !IsPublicContentAuditError(err)
+}
+
+func channelErrorMessageForUser(err *types.NewAPIError) string {
+	if err == nil {
+		return ""
 	}
-	message := common.ContentAuditUserMessage
+	var message string
+	switch relayErr := err.RelayError.(type) {
+	case types.OpenAIError:
+		message = relayErr.Message
+	case *types.OpenAIError:
+		message = relayErr.Message
+	case types.ClaudeError:
+		message = relayErr.Message
+	case *types.ClaudeError:
+		message = relayErr.Message
+	default:
+		message = err.MaskSensitiveError()
+	}
+	if len(err.Metadata) > 0 {
+		message = strings.TrimSuffix(message, fmt.Sprintf(" (%s)", err.Metadata))
+	}
+	return common.SanitizeChannelErrorMessageForUser(message)
+}
+
+func channelBadRequestForUser(err *types.NewAPIError, requestID string) *types.NewAPIError {
+	message := channelErrorMessageForUser(err)
+	if message == "" {
+		message = common.ChannelBadRequestMessage
+	}
+	if requestID != "" {
+		message = common.MessageWithRequestId(message, requestID)
+	}
+
+	switch relayErr := err.RelayError.(type) {
+	case types.OpenAIError:
+		relayErr.Message = message
+		relayErr.Metadata = nil
+		return types.WithOpenAIError(relayErr, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	case *types.OpenAIError:
+		publicErr := *relayErr
+		publicErr.Message = message
+		publicErr.Metadata = nil
+		return types.WithOpenAIError(publicErr, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	case types.ClaudeError:
+		relayErr.Message = message
+		return types.WithClaudeError(relayErr, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	case *types.ClaudeError:
+		publicErr := *relayErr
+		publicErr.Message = message
+		return types.WithClaudeError(publicErr, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	default:
+		errorCode := err.GetErrorCode()
+		if errorCode == "" {
+			errorCode = types.ErrorCodeInvalidRequest
+		}
+		return types.NewOpenAIError(errors.New(message), errorCode, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
+}
+
+func channelRateLimitForUser(requestID string) *types.NewAPIError {
+	message := common.ChannelRateLimitMessage
 	if requestID != "" {
 		message = common.MessageWithRequestId(message, requestID)
 	}
 	return types.NewOpenAIError(
 		errors.New(message),
-		types.ErrorCodeContentAuditBlocked,
-		http.StatusForbidden,
+		types.ErrorCodeRateLimitExceeded,
+		http.StatusTooManyRequests,
 		types.ErrOptionWithSkipRetry(),
 	)
+}
+
+func ChannelErrorForUser(err *types.NewAPIError, requestID string) *types.NewAPIError {
+	if IsPublicContentAuditError(err) {
+		message := common.ContentAuditUserMessage
+		if requestID != "" {
+			message = common.MessageWithRequestId(message, requestID)
+		}
+		return types.NewOpenAIError(
+			errors.New(message),
+			types.ErrorCodeContentAuditBlocked,
+			http.StatusForbidden,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
+	if IsPublicChannelBadRequest(err) {
+		return channelBadRequestForUser(err, requestID)
+	}
+	if err != nil && err.StatusCode == http.StatusTooManyRequests {
+		return channelRateLimitForUser(requestID)
+	}
+	return SanitizeChannelErrorForUser(requestID)
 }
 
 // ParseUpstreamStreamError recognizes explicit structured error fields without

@@ -51,6 +51,7 @@ const (
 	ErrorCodeGetChannelFailed    ErrorCode = "get_channel_failed"
 	ErrorCodeGenRelayInfoFailed  ErrorCode = "gen_relay_info_failed"
 	ErrorCodeServiceUnavailable  ErrorCode = "service_unavailable"
+	ErrorCodeRateLimitExceeded   ErrorCode = "rate_limit_exceeded"
 	ErrorCodeContentAuditBlocked ErrorCode = "content_audit_blocked"
 
 	// channel error

@@ -175,6 +175,8 @@ const (
 	UpstreamRequestIdKey     = "X-Upstream-Request-Id"
 	ChannelErrorForUserKey   = "channel_error_for_user"
 	ChannelErrorUserMessage  = "暂时无法完成此请求，请稍后重试"
+	ChannelBadRequestMessage = "请求参数无效，请检查后重试"
+	ChannelRateLimitMessage  = "请求过于频繁，请稍后重试"
 	ContentAuditUserMessage  = "内容审计命中风险规则，请调整输入后重试"
 	StreamResponseStartedKey = "stream_response_started"
 )

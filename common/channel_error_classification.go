@@ -1,6 +1,14 @@
 package common
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+var (
+	channelErrorStatusPrefix = regexp.MustCompile(`(?i)^\s*status_code\s*=\s*\d{3}\s*,?\s*`)
+	channelRequestID         = regexp.MustCompile(`(?i)\s*[\(\[]?\s*["']?(?:(?:x|upstream|client)[-_ ]*)?request[-_ ]*id["']?\s*[:=]\s*["']?[a-z0-9][a-z0-9._:-]{5,127}["']?\s*[\)\]]?`)
+)
 
 var privateChannelErrorCodeSignals = []string{
 	"insufficient_balance", "account_balance", "billing", "payment_required",
@@ -49,4 +57,32 @@ func IsExplicitContentAuditError(structuredText string, messageText string) bool
 	}
 	return containsAnyChannelErrorSignal(structuredText, contentAuditCodeSignals) ||
 		containsAnyChannelErrorSignal(messageText, contentAuditMessageSignals)
+}
+
+// SanitizeChannelErrorMessageForUser keeps actionable error semantics while
+// removing transport metadata that belongs only in administrator diagnostics.
+func SanitizeChannelErrorMessageForUser(message string) string {
+	message = strings.TrimSpace(message)
+	// OpenAI-compatible errors append response metadata as a parenthesized JSON
+	// suffix. Remove it before masking so historical logs cannot expose it.
+	if strings.HasSuffix(message, ")") {
+		if metadataStart := strings.LastIndex(message, " ("); metadataStart >= 0 {
+			rawMetadata := message[metadataStart+2 : len(message)-1]
+			var metadata any
+			if Unmarshal([]byte(rawMetadata), &metadata) == nil {
+				switch metadata.(type) {
+				case map[string]any, []any:
+					message = message[:metadataStart]
+				}
+			}
+		}
+	}
+	message = MaskSensitiveInfo(message)
+	message = channelErrorStatusPrefix.ReplaceAllString(message, "")
+	message = channelRequestID.ReplaceAllString(message, "")
+	message = strings.TrimSpace(strings.Trim(message, ",;"))
+	if message == "{}" || message == "[]" {
+		return ""
+	}
+	return message
 }

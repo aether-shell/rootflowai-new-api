@@ -61,6 +61,9 @@ func TestChannelErrorForUserClassifiesMultilingualContentAudit(t *testing.T) {
 				if test.message != common.ContentAuditUserMessage {
 					require.NotContains(t, publicErr.Error(), test.message)
 				}
+			} else if test.statusCode == http.StatusBadRequest {
+				require.Equal(t, http.StatusBadRequest, publicErr.StatusCode)
+				require.Equal(t, test.message+" (request id: rf_test)", publicErr.Error())
 			} else {
 				require.Equal(t, http.StatusServiceUnavailable, publicErr.StatusCode)
 				require.Equal(t, types.ErrorCodeServiceUnavailable, publicErr.GetErrorCode())
@@ -69,6 +72,53 @@ func TestChannelErrorForUserClassifiesMultilingualContentAudit(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestChannelErrorForUserPreservesSanitizedBadRequest(t *testing.T) {
+	err := types.WithOpenAIError(types.OpenAIError{
+		Message:  "Thinking level MINIMAL is not supported. https://vendor.example.com/docs (request id: channel-123456)",
+		Type:     "invalid_request_error",
+		Code:     "unsupported_thinking_level",
+		Metadata: []byte(`{"route":"internal"}`),
+	}, http.StatusBadRequest)
+
+	publicErr := ChannelErrorForUser(err, "rf_test")
+
+	require.True(t, IsPublicChannelBadRequest(err))
+	require.Equal(t, http.StatusBadRequest, publicErr.StatusCode)
+	require.Equal(t, types.ErrorCode("unsupported_thinking_level"), publicErr.GetErrorCode())
+	require.Equal(t, "Thinking level MINIMAL is not supported. https://***.com/*** (request id: rf_test)", publicErr.Error())
+	require.NotContains(t, publicErr.Error(), "channel-123456")
+	require.Empty(t, publicErr.Metadata)
+	require.Empty(t, publicErr.ToOpenAIError().Metadata)
+}
+
+func TestChannelErrorForUserPreservesClaudeBadRequestShape(t *testing.T) {
+	err := types.WithClaudeError(types.ClaudeError{
+		Message: "Invalid tool input (X-Request-ID: channel-request-123456)",
+		Type:    "invalid_request_error",
+	}, http.StatusBadRequest)
+
+	publicErr := ChannelErrorForUser(err, "rf_test")
+
+	require.Equal(t, http.StatusBadRequest, publicErr.StatusCode)
+	require.Equal(t, "invalid_request_error", publicErr.ToClaudeError().Type)
+	require.Equal(t, "Invalid tool input (request id: rf_test)", publicErr.ToClaudeError().Message)
+}
+
+func TestChannelErrorForUserNormalizesRateLimit(t *testing.T) {
+	err := types.WithOpenAIError(types.OpenAIError{
+		Message: "Account pool exhausted for vendor route",
+		Type:    "rate_limit_error",
+		Code:    "vendor_quota_exhausted",
+	}, http.StatusTooManyRequests)
+
+	publicErr := ChannelErrorForUser(err, "rf_test")
+
+	require.Equal(t, http.StatusTooManyRequests, publicErr.StatusCode)
+	require.Equal(t, types.ErrorCodeRateLimitExceeded, publicErr.GetErrorCode())
+	require.Equal(t, common.ChannelRateLimitMessage+" (request id: rf_test)", publicErr.Error())
+	require.NotContains(t, publicErr.Error(), "vendor")
 }
 
 func TestShouldDisableChannelKeepsContentAuditChannelEnabled(t *testing.T) {
