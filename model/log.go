@@ -125,9 +125,20 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		_, hasLegacyChannelID := otherMap["channel_id"]
 		isChannelError := log.Type == LogTypeError && (log.ChannelId != 0 || hasLegacyChannelID)
 		if isChannelError {
-			if otherMap["error_code"] == string(relaytypes.ErrorCodeContentAuditBlocked) {
+			isContentAudit := otherMap["error_code"] == string(relaytypes.ErrorCodeContentAuditBlocked)
+			if adminInfo, ok := otherMap["admin_info"].(map[string]interface{}); ok {
+				originalError, hasOriginalError := adminInfo["original_error"]
+				originalErrorType, hasOriginalErrorType := adminInfo["original_error_type"]
+				originalErrorCode, hasOriginalErrorCode := adminInfo["original_error_code"]
+				if hasOriginalError || hasOriginalErrorType || hasOriginalErrorCode {
+					structured := fmt.Sprintf("%v %v", originalErrorType, originalErrorCode)
+					isContentAudit = common.IsExplicitContentAuditError(structured, fmt.Sprint(originalError))
+				}
+			}
+			if isContentAudit {
 				log.Content = common.ContentAuditUserMessage
 				otherMap["error_type"] = string(relaytypes.ErrorCodeContentAuditBlocked)
+				otherMap["error_code"] = string(relaytypes.ErrorCodeContentAuditBlocked)
 				otherMap["status_code"] = http.StatusForbidden
 			} else {
 				log.Content = common.ChannelErrorUserMessage

@@ -79,7 +79,8 @@ func TestFormatUserLogsPreservesPublicContentAuditNotice(t *testing.T) {
 		"error_code":  "content_audit_blocked",
 		"status_code": 403,
 		"admin_info": map[string]interface{}{
-			"original_error": "provider-specific policy metadata",
+			"original_error":      "Request blocked by content policy",
+			"original_error_code": "content_policy",
 		},
 	})
 	logs := []*Log{{
@@ -103,6 +104,62 @@ func TestFormatUserLogsPreservesPublicContentAuditNotice(t *testing.T) {
 	require.Equal(t, "content_audit_blocked", parsed["error_code"])
 	require.Equal(t, float64(403), parsed["status_code"])
 	require.NotContains(t, parsed, "admin_info")
+}
+
+func TestFormatUserLogsReclassifiesHistoricalBareForbiddenAsGeneric(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"error_type":  "content_audit_blocked",
+		"error_code":  "content_audit_blocked",
+		"status_code": 403,
+		"admin_info": map[string]interface{}{
+			"original_error":      `The current group does not support the requested model "gpt-test"`,
+			"original_error_type": "openai_error",
+			"original_error_code": "unknown_error",
+		},
+	})
+	logs := []*Log{{
+		Type:      LogTypeError,
+		Content:   common.ContentAuditUserMessage,
+		ChannelId: 77,
+		Other:     other,
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, common.ChannelErrorUserMessage, logs[0].Content)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.Equal(t, "service_unavailable", parsed["error_type"])
+	require.Equal(t, "service_unavailable", parsed["error_code"])
+	require.Equal(t, float64(503), parsed["status_code"])
+}
+
+func TestFormatUserLogsReclassifiesHistoricalCyberPolicyAsAudit(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"error_type":  "service_unavailable",
+		"error_code":  "service_unavailable",
+		"status_code": 503,
+		"channel_id":  77,
+		"admin_info": map[string]interface{}{
+			"original_error":      `responses stream error: {"error":{"code":"cyber_policy","message":"This content was flagged for possible cybersecurity risk"}}`,
+			"original_error_type": "new_api_error",
+			"original_error_code": "bad_response",
+		},
+	})
+	logs := []*Log{{
+		Type:    LogTypeError,
+		Content: common.ChannelErrorUserMessage,
+		Other:   other,
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, common.ContentAuditUserMessage, logs[0].Content)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.Equal(t, "content_audit_blocked", parsed["error_type"])
+	require.Equal(t, "content_audit_blocked", parsed["error_code"])
+	require.Equal(t, float64(403), parsed["status_code"])
 }
 
 func TestFormatUserLogsDoesNotReturnMalformedOtherOrChannelFields(t *testing.T) {
