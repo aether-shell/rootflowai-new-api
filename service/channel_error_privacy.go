@@ -47,6 +47,39 @@ func IsPublicContentAuditError(err *types.NewAPIError) bool {
 	return common.IsExplicitContentAuditError(structured, message)
 }
 
+func classifyPublicChannelError(err *types.NewAPIError) (common.PublicChannelErrorContract, bool) {
+	if err == nil {
+		return common.PublicChannelErrorContract{}, false
+	}
+	structured := []string{string(err.GetErrorCode()), string(err.GetErrorType())}
+	message := err.Error()
+	switch relayErr := err.RelayError.(type) {
+	case types.OpenAIError:
+		structured = append(structured, relayErr.Type, fmt.Sprint(relayErr.Code))
+		message = relayErr.Message
+	case *types.OpenAIError:
+		structured = append(structured, relayErr.Type, fmt.Sprint(relayErr.Code))
+		message = relayErr.Message
+	case types.ClaudeError:
+		structured = append(structured, relayErr.Type)
+		message = relayErr.Message
+	case *types.ClaudeError:
+		structured = append(structured, relayErr.Type)
+		message = relayErr.Message
+	}
+	return common.ClassifyPublicChannelError(err.StatusCode, strings.Join(structured, " "), message)
+}
+
+func ShouldPreferMappedChannelError(err *types.NewAPIError) bool {
+	contract, ok := classifyPublicChannelError(err)
+	return ok && contract.Code != common.GatewayTimeoutType
+}
+
+func ShouldStopRetryForPublicChannelError(err *types.NewAPIError) bool {
+	contract, ok := classifyPublicChannelError(err)
+	return ok && contract.StopRetry
+}
+
 func IsPublicChannelBadRequest(err *types.NewAPIError) bool {
 	return err != nil && err.StatusCode == http.StatusBadRequest && !IsPublicContentAuditError(err)
 }
@@ -123,16 +156,20 @@ func channelRateLimitForUser(requestID string) *types.NewAPIError {
 }
 
 func ChannelErrorForUser(err *types.NewAPIError, requestID string) *types.NewAPIError {
-	if IsPublicContentAuditError(err) {
-		message := common.ContentAuditUserMessage
+	if contract, ok := classifyPublicChannelError(err); ok {
+		message := contract.Message
 		if requestID != "" {
 			message = common.MessageWithRequestId(message, requestID)
 		}
+		options := make([]types.NewAPIErrorOptions, 0, 1)
+		if contract.StopRetry {
+			options = append(options, types.ErrOptionWithSkipRetry())
+		}
 		return types.NewOpenAIError(
 			errors.New(message),
-			types.ErrorCodeContentAuditBlocked,
-			http.StatusForbidden,
-			types.ErrOptionWithSkipRetry(),
+			types.ErrorCode(contract.Code),
+			contract.StatusCode,
+			options...,
 		)
 	}
 	if IsPublicChannelBadRequest(err) {

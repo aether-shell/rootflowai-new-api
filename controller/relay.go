@@ -377,7 +377,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 }
 
 func preferredChannelErrorForUser(current *types.NewAPIError, lastBadRequest *types.NewAPIError) *types.NewAPIError {
-	if current == nil || lastBadRequest == nil || service.IsPublicContentAuditError(current) {
+	if current == nil || lastBadRequest == nil || service.ShouldPreferMappedChannelError(current) {
 		return nil
 	}
 	return lastBadRequest
@@ -393,7 +393,7 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
-	if service.IsPublicContentAuditError(openaiErr) {
+	if service.ShouldStopRetryForPublicChannelError(openaiErr) {
 		return false
 	}
 	if types.IsChannelError(openaiErr) {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -106,6 +107,16 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 
 	err = common.Unmarshal(responseBody, &errResponse)
 	if err != nil {
+		// Some Responses-compatible upstreams append an SSE event directly
+		// after an otherwise valid JSON error object on non-200 responses.
+		if eventIndex := bytes.Index(responseBody, []byte("event:")); eventIndex > 0 {
+			jsonPrefix := bytes.TrimSpace(responseBody[:eventIndex])
+			if len(jsonPrefix) > 0 && jsonPrefix[len(jsonPrefix)-1] == '}' {
+				err = common.Unmarshal(jsonPrefix, &errResponse)
+			}
+		}
+	}
+	if err != nil {
 		if showBodyWhenFail {
 			newApiErr.Err = buildErrWithBody("")
 		} else {
@@ -119,6 +130,12 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		// General format error (OpenAI, Anthropic, Gemini, etc.)
 		oaiError := errResponse.TryToOpenAIError()
 		if oaiError != nil {
+			if resp.StatusCode == http.StatusForbidden && common.IsCodexOfficialClientForbiddenError(
+				fmt.Sprintf("%s %v", oaiError.Type, oaiError.Code),
+				oaiError.Message,
+			) {
+				oaiError.Code = common.CodexOfficialClientForbiddenType
+			}
 			newApiErr = types.WithOpenAIError(*oaiError, resp.StatusCode)
 			if showBodyWhenFail {
 				newApiErr.Err = buildErrWithBody(newApiErr.Error())

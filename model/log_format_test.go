@@ -1,6 +1,7 @@
 package model
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -106,7 +107,42 @@ func TestFormatUserLogsPreservesPublicContentAuditNotice(t *testing.T) {
 	require.NotContains(t, parsed, "admin_info")
 }
 
-func TestFormatUserLogsReclassifiesHistoricalBareForbiddenAsGeneric(t *testing.T) {
+func TestFormatUserLogsPreservesCodexOfficialClientRestriction(t *testing.T) {
+	other := common.MapToJsonStr(map[string]interface{}{
+		"error_type":  "service_unavailable",
+		"error_code":  "service_unavailable",
+		"status_code": 503,
+		"admin_info": map[string]interface{}{
+			"original_error":       "status_code=403, " + common.CodexOfficialClientForbiddenMessage,
+			"original_error_type":  "openai_error",
+			"original_error_code":  common.CodexOfficialClientForbiddenType,
+			"original_status_code": 403,
+		},
+	})
+	logs := []*Log{{
+		Type:              LogTypeError,
+		Content:           common.ChannelErrorUserMessage,
+		ChannelId:         77,
+		ChannelName:       "vendor-a",
+		UpstreamRequestId: "upstream-secret",
+		Other:             other,
+	}}
+
+	formatUserLogs(logs, 0)
+
+	require.Equal(t, common.CodexOfficialClientForbiddenMessage, logs[0].Content)
+	require.Zero(t, logs[0].ChannelId)
+	require.Empty(t, logs[0].ChannelName)
+	require.Empty(t, logs[0].UpstreamRequestId)
+	parsed, err := common.StrToMap(logs[0].Other)
+	require.NoError(t, err)
+	require.Equal(t, common.CodexOfficialClientForbiddenType, parsed["error_type"])
+	require.Equal(t, common.CodexOfficialClientForbiddenType, parsed["error_code"])
+	require.Equal(t, float64(http.StatusForbidden), parsed["status_code"])
+	require.NotContains(t, parsed, "admin_info")
+}
+
+func TestFormatUserLogsRestoresHistoricalModelUnavailable(t *testing.T) {
 	other := common.MapToJsonStr(map[string]interface{}{
 		"error_type":  "content_audit_blocked",
 		"error_code":  "content_audit_blocked",
@@ -126,12 +162,103 @@ func TestFormatUserLogsReclassifiesHistoricalBareForbiddenAsGeneric(t *testing.T
 
 	formatUserLogs(logs, 0)
 
-	require.Equal(t, common.ChannelErrorUserMessage, logs[0].Content)
+	require.Equal(t, common.ModelNotAvailableMessage, logs[0].Content)
 	parsed, err := common.StrToMap(logs[0].Other)
 	require.NoError(t, err)
-	require.Equal(t, "service_unavailable", parsed["error_type"])
-	require.Equal(t, "service_unavailable", parsed["error_code"])
-	require.Equal(t, float64(503), parsed["status_code"])
+	require.Equal(t, common.ModelNotAvailableType, parsed["error_type"])
+	require.Equal(t, common.ModelNotAvailableType, parsed["error_code"])
+	require.Equal(t, float64(http.StatusNotFound), parsed["status_code"])
+}
+
+func TestFormatUserLogsRestoresMappedErrors(t *testing.T) {
+	tests := []struct {
+		name           string
+		originalStatus int
+		originalType   string
+		originalCode   string
+		originalError  string
+		wantStatus     int
+		wantCode       string
+		wantMessage    string
+	}{
+		{
+			name:           "timeout",
+			originalStatus: http.StatusGatewayTimeout,
+			originalError:  "status_code=504, Request did not complete within 900 seconds and was aborted by the gateway",
+			wantStatus:     http.StatusGatewayTimeout,
+			wantCode:       common.GatewayTimeoutType,
+			wantMessage:    common.GatewayTimeoutMessage,
+		},
+		{
+			name:           "context too long",
+			originalStatus: http.StatusInternalServerError,
+			originalCode:   common.ContextLengthExceededType,
+			originalError:  "status_code=500, Your input exceeds the context window of this model",
+			wantStatus:     http.StatusBadRequest,
+			wantCode:       common.ContextLengthExceededType,
+			wantMessage:    common.ContextLengthExceededMessage,
+		},
+		{
+			name:           "user quota",
+			originalStatus: http.StatusForbidden,
+			originalCode:   "insufficient_user_quota",
+			originalError:  "status_code=403, 用户额度不足, 剩余额度: -1",
+			wantStatus:     http.StatusForbidden,
+			wantCode:       common.InsufficientQuotaType,
+			wantMessage:    common.InsufficientQuotaMessage,
+		},
+		{
+			name:           "Claude official client",
+			originalStatus: http.StatusForbidden,
+			originalError:  "status_code=403, Request blocked: this endpoint only accepts requests from the official Claude Code CLI.",
+			wantStatus:     http.StatusForbidden,
+			wantCode:       common.OfficialClientRequiredType,
+			wantMessage:    common.OfficialClientRequiredMessage,
+		},
+		{
+			name:           "unprocessable entity",
+			originalStatus: http.StatusUnprocessableEntity,
+			originalError:  "status_code=422, Unprocessable Entity",
+			wantStatus:     http.StatusUnprocessableEntity,
+			wantCode:       common.UnprocessableEntityType,
+			wantMessage:    common.UnprocessableEntityMessage,
+		},
+		{
+			name:           "unsupported endpoint",
+			originalStatus: http.StatusInternalServerError,
+			originalError:  "status_code=500, channel does not support /v1/alpha/search",
+			wantStatus:     http.StatusBadRequest,
+			wantCode:       common.UnsupportedEndpointType,
+			wantMessage:    common.UnsupportedEndpointMessage,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			other := common.MapToJsonStr(map[string]interface{}{
+				"error_type":  "service_unavailable",
+				"error_code":  "service_unavailable",
+				"status_code": 503,
+				"admin_info": map[string]interface{}{
+					"original_error":       test.originalError,
+					"original_error_type":  test.originalType,
+					"original_error_code":  test.originalCode,
+					"original_status_code": test.originalStatus,
+				},
+			})
+			logs := []*Log{{Type: LogTypeError, Content: common.ChannelErrorUserMessage, ChannelId: 77, Other: other}}
+
+			formatUserLogs(logs, 0)
+
+			require.Equal(t, test.wantMessage, logs[0].Content)
+			parsed, err := common.StrToMap(logs[0].Other)
+			require.NoError(t, err)
+			require.Equal(t, test.wantCode, parsed["error_type"])
+			require.Equal(t, test.wantCode, parsed["error_code"])
+			require.Equal(t, float64(test.wantStatus), parsed["status_code"])
+			require.NotContains(t, parsed, "admin_info")
+		})
+	}
 }
 
 func TestFormatUserLogsReclassifiesHistoricalCyberPolicyAsAudit(t *testing.T) {

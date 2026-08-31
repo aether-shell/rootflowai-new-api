@@ -1,6 +1,7 @@
 package common
 
 import (
+	"net/http"
 	"regexp"
 	"strings"
 )
@@ -27,6 +28,7 @@ var privateChannelErrorMessageSignals = []string{
 var contentAuditCodeSignals = []string{
 	"content_policy", "content_filter", "content_audit", "content_blocked", "moderation",
 	"prompt_blocked", "risk_control", "safety", "sensitive_words", "cyber_policy",
+	"violation_fee.grok.csam",
 }
 
 var contentAuditMessageSignals = []string{
@@ -35,6 +37,20 @@ var contentAuditMessageSignals = []string{
 	"cyber policy", "cyber-security policy", "cybersecurity policy", "cybersecurity risk",
 	"内容审计", "内容审核", "内容安全", "风险规则", "风险控制", "风控",
 	"敏感词", "提示词被拦截", "提示词违规", "网络安全策略",
+	"content violates usage guidelines",
+}
+
+type PublicChannelErrorContract struct {
+	Message    string
+	Type       string
+	Code       string
+	StatusCode int
+	StopRetry  bool
+}
+
+var claudeOfficialClientMessages = []string{
+	"request blocked: this endpoint only accepts requests from the official claude code cli.",
+	"当前分组仅限 claude code 客户端接入。the current group is only accessible to claude code clients.",
 }
 
 func containsAnyChannelErrorSignal(text string, signals []string) bool {
@@ -57,6 +73,85 @@ func IsExplicitContentAuditError(structuredText string, messageText string) bool
 	}
 	return containsAnyChannelErrorSignal(structuredText, contentAuditCodeSignals) ||
 		containsAnyChannelErrorSignal(messageText, contentAuditMessageSignals)
+}
+
+// IsCodexOfficialClientForbiddenError matches the one upstream authorization
+// error that is safe and actionable for end users. Other 403 responses remain
+// private channel diagnostics.
+func IsCodexOfficialClientForbiddenError(structuredText string, messageText string) bool {
+	structuredText = strings.ToLower(structuredText)
+	messageText = channelErrorStatusPrefix.ReplaceAllString(strings.TrimSpace(messageText), "")
+	return strings.Contains(structuredText, CodexOfficialClientForbiddenType) &&
+		strings.EqualFold(messageText, CodexOfficialClientForbiddenMessage)
+}
+
+func ClassifyPublicChannelError(statusCode int, structuredText string, messageText string) (PublicChannelErrorContract, bool) {
+	structuredText = strings.ToLower(structuredText)
+	messageText = channelErrorStatusPrefix.ReplaceAllString(strings.TrimSpace(messageText), "")
+	normalizedMessage := strings.ToLower(messageText)
+	contract := func(message string, errorType string, publicStatus int, stopRetry bool) (PublicChannelErrorContract, bool) {
+		return PublicChannelErrorContract{
+			Message:    message,
+			Type:       errorType,
+			Code:       errorType,
+			StatusCode: publicStatus,
+			StopRetry:  stopRetry,
+		}, true
+	}
+
+	if statusCode == http.StatusForbidden && IsCodexOfficialClientForbiddenError(structuredText, messageText) {
+		return contract(CodexOfficialClientForbiddenMessage, CodexOfficialClientForbiddenType, http.StatusForbidden, true)
+	}
+	if (statusCode == http.StatusForbidden || statusCode == http.StatusBadRequest) &&
+		(containsAnyChannelErrorSignal(normalizedMessage, claudeOfficialClientMessages) ||
+			strings.HasPrefix(normalizedMessage, "我们检测到您的客户端存在异常，请使用标准 claude code 客户端请求。")) {
+		return contract(OfficialClientRequiredMessage, OfficialClientRequiredType, http.StatusForbidden, true)
+	}
+	if IsExplicitContentAuditError(structuredText, normalizedMessage) {
+		return contract(ContentAuditUserMessage, "content_audit_blocked", http.StatusForbidden, true)
+	}
+	if statusCode == http.StatusForbidden && strings.Contains(normalizedMessage, "the current group does not support the requested model") {
+		return contract(ModelNotAvailableMessage, ModelNotAvailableType, http.StatusNotFound, false)
+	}
+	if statusCode == http.StatusForbidden && strings.Contains(normalizedMessage, "this session already belongs to another group") {
+		return contract(SessionGroupConflictMessage, SessionGroupConflictType, http.StatusConflict, true)
+	}
+	if strings.Contains(structuredText, ContextLengthExceededType) ||
+		strings.Contains(normalizedMessage, "does not leave enough room in the model's context window") ||
+		strings.Contains(normalizedMessage, "input exceeds the context window") ||
+		strings.Contains(normalizedMessage, "maximum prompt length") ||
+		strings.Contains(normalizedMessage, "input token count exceeds") {
+		return contract(ContextLengthExceededMessage, ContextLengthExceededType, http.StatusBadRequest, true)
+	}
+	if strings.Contains(normalizedMessage, "channel does not support /v1/") {
+		return contract(UnsupportedEndpointMessage, UnsupportedEndpointType, http.StatusBadRequest, true)
+	}
+	if strings.Contains(structuredText, "insufficient_user_quota") ||
+		strings.HasPrefix(normalizedMessage, "预扣费额度失败, 用户剩余额度:") {
+		return contract(InsufficientQuotaMessage, InsufficientQuotaType, http.StatusForbidden, true)
+	}
+	if strings.Contains(normalizedMessage, "prompt_cache_breakpoint is not supported") {
+		return contract(UnsupportedParameterMessage, UnsupportedParameterType, http.StatusBadRequest, true)
+	}
+	if strings.Contains(normalizedMessage, "only supports image generation and cannot process text conversation requests") {
+		return contract(UnsupportedModelCapabilityMessage, UnsupportedModelCapabilityType, http.StatusBadRequest, true)
+	}
+	if (strings.Contains(normalizedMessage, "model '") || strings.Contains(normalizedMessage, "model \"")) &&
+		(strings.Contains(normalizedMessage, " is not supported.") || strings.Contains(normalizedMessage, " is not supported by any configured account")) {
+		return contract(ModelNotSupportedMessage, ModelNotSupportedType, http.StatusNotFound, false)
+	}
+	if statusCode == http.StatusUnprocessableEntity {
+		return contract(UnprocessableEntityMessage, UnprocessableEntityType, http.StatusUnprocessableEntity, true)
+	}
+	if statusCode == http.StatusRequestEntityTooLarge {
+		return contract(PayloadTooLargeMessage, PayloadTooLargeType, http.StatusRequestEntityTooLarge, true)
+	}
+	if statusCode == http.StatusRequestTimeout || statusCode == http.StatusGatewayTimeout || statusCode == 524 ||
+		strings.Contains(normalizedMessage, "request did not complete within") ||
+		strings.Contains(normalizedMessage, "request timeout") {
+		return contract(GatewayTimeoutMessage, GatewayTimeoutType, http.StatusGatewayTimeout, false)
+	}
+	return PublicChannelErrorContract{}, false
 }
 
 // SanitizeChannelErrorMessageForUser keeps actionable error semantics while

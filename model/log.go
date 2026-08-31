@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -125,34 +126,45 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		_, hasLegacyChannelID := otherMap["channel_id"]
 		isChannelError := log.Type == LogTypeError && (log.ChannelId != 0 || hasLegacyChannelID)
 		if isChannelError {
-			isContentAudit := otherMap["error_code"] == string(relaytypes.ErrorCodeContentAuditBlocked)
 			var originalError, originalErrorType, originalErrorCode, originalStatusCode interface{}
+			hasOriginalClassification := false
 			if adminInfo, ok := otherMap["admin_info"].(map[string]interface{}); ok {
 				var hasOriginalError, hasOriginalErrorType, hasOriginalErrorCode bool
 				originalError, hasOriginalError = adminInfo["original_error"]
 				originalErrorType, hasOriginalErrorType = adminInfo["original_error_type"]
 				originalErrorCode, hasOriginalErrorCode = adminInfo["original_error_code"]
 				originalStatusCode = adminInfo["original_status_code"]
-				if hasOriginalError || hasOriginalErrorType || hasOriginalErrorCode {
-					structured := fmt.Sprintf("%v %v", originalErrorType, originalErrorCode)
-					isContentAudit = common.IsExplicitContentAuditError(structured, fmt.Sprint(originalError))
+				hasOriginalClassification = hasOriginalError || hasOriginalErrorType || hasOriginalErrorCode
+			}
+
+			classificationMessage := log.Content
+			classificationType := otherMap["error_type"]
+			classificationCode := otherMap["error_code"]
+			classificationStatus, _ := strconv.Atoi(strings.TrimSpace(fmt.Sprint(otherMap["status_code"])))
+			if hasOriginalClassification {
+				classificationMessage = fmt.Sprint(originalError)
+				classificationType = originalErrorType
+				classificationCode = originalErrorCode
+				if status, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(originalStatusCode))); err == nil {
+					classificationStatus = status
 				}
 			}
-			if isContentAudit {
-				log.Content = common.ContentAuditUserMessage
-				otherMap["error_type"] = string(relaytypes.ErrorCodeContentAuditBlocked)
-				otherMap["error_code"] = string(relaytypes.ErrorCodeContentAuditBlocked)
-				otherMap["status_code"] = http.StatusForbidden
-			} else if fmt.Sprint(originalStatusCode) == fmt.Sprint(http.StatusBadRequest) {
-				message := common.SanitizeChannelErrorMessageForUser(fmt.Sprint(originalError))
+			structuredError := fmt.Sprintf("%v %v", classificationType, classificationCode)
+			if contract, ok := common.ClassifyPublicChannelError(classificationStatus, structuredError, classificationMessage); ok {
+				log.Content = contract.Message
+				otherMap["error_type"] = contract.Type
+				otherMap["error_code"] = contract.Code
+				otherMap["status_code"] = contract.StatusCode
+			} else if classificationStatus == http.StatusBadRequest {
+				message := common.SanitizeChannelErrorMessageForUser(classificationMessage)
 				if message == "" || message == "<nil>" {
 					message = common.ChannelBadRequestMessage
 				}
-				errorType := strings.TrimSpace(fmt.Sprint(originalErrorType))
+				errorType := strings.TrimSpace(fmt.Sprint(classificationType))
 				if errorType == "" || errorType == "<nil>" {
 					errorType = "invalid_request_error"
 				}
-				errorCode := strings.TrimSpace(fmt.Sprint(originalErrorCode))
+				errorCode := strings.TrimSpace(fmt.Sprint(classificationCode))
 				if errorCode == "" || errorCode == "<nil>" {
 					errorCode = string(relaytypes.ErrorCodeInvalidRequest)
 				}
@@ -160,7 +172,7 @@ func formatUserLogs(logs []*Log, startIdx int) {
 				otherMap["error_type"] = errorType
 				otherMap["error_code"] = errorCode
 				otherMap["status_code"] = http.StatusBadRequest
-			} else if fmt.Sprint(originalStatusCode) == fmt.Sprint(http.StatusTooManyRequests) {
+			} else if classificationStatus == http.StatusTooManyRequests {
 				log.Content = common.ChannelRateLimitMessage
 				otherMap["error_type"] = string(relaytypes.ErrorCodeRateLimitExceeded)
 				otherMap["error_code"] = string(relaytypes.ErrorCodeRateLimitExceeded)

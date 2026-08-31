@@ -182,6 +182,35 @@ const (
 )
 
 const (
+	CodexOfficialClientForbiddenMessage = "This account only allows Codex official clients"
+	CodexOfficialClientForbiddenType    = "forbidden_error"
+	OfficialClientRequiredMessage       = "This endpoint only allows official Claude Code clients"
+	OfficialClientRequiredType          = "official_client_required"
+	ModelNotAvailableMessage            = "当前访问分组不支持所请求的模型，请通过 /v1/models 查看可用模型"
+	ModelNotAvailableType               = "model_not_available"
+	GatewayTimeoutMessage               = "请求处理超时，请稍后重试"
+	GatewayTimeoutType                  = "gateway_timeout"
+	ModelNotSupportedMessage            = "所请求的模型暂不受支持，请更换模型后重试"
+	ModelNotSupportedType               = "model_not_supported"
+	SessionGroupConflictMessage         = "当前会话已绑定其他访问分组，请开启新会话后重试"
+	SessionGroupConflictType            = "session_group_conflict"
+	UnprocessableEntityMessage          = "请求内容无法处理，请检查参数或输入后重试"
+	UnprocessableEntityType             = "unprocessable_entity"
+	ContextLengthExceededMessage        = "输入内容超过模型上下文限制，请缩短输入或压缩会话后重试"
+	ContextLengthExceededType           = "context_length_exceeded"
+	UnsupportedEndpointMessage          = "当前接口不受所请求模型支持，请更换接口或模型后重试"
+	UnsupportedEndpointType             = "unsupported_endpoint"
+	InsufficientQuotaMessage            = "用户额度不足，请充值或调整用量后重试"
+	InsufficientQuotaType               = "insufficient_quota"
+	UnsupportedParameterMessage         = "请求包含当前模型不支持的参数，请调整后重试"
+	UnsupportedParameterType            = "unsupported_parameter"
+	UnsupportedModelCapabilityMessage   = "所请求模型不支持当前任务类型，请更换模型后重试"
+	UnsupportedModelCapabilityType      = "unsupported_model_capability"
+	PayloadTooLargeMessage              = "请求体过大，请缩减内容后重试"
+	PayloadTooLargeType                 = "payload_too_large"
+)
+
+const (
 	RoleGuestUser  = 0
 	RoleCommonUser = 1
 	RoleAdminUser  = 10

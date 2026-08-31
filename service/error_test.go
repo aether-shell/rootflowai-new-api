@@ -122,6 +122,22 @@ func TestRelayErrorHandlerKeepsOpenAIErrorMessage(t *testing.T) {
 	require.Equal(t, message, newAPIError.Error())
 }
 
+func TestRelayErrorHandlerParsesCodexForbiddenErrorBeforeSSETrailer(t *testing.T) {
+	body := `{"error":{"message":"This account only allows Codex official clients","type":"forbidden_error"}}event: error`
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	newAPIError := RelayErrorHandler(context.Background(), resp, false)
+
+	require.NotNil(t, newAPIError)
+	require.Equal(t, http.StatusForbidden, newAPIError.StatusCode)
+	require.Equal(t, common.CodexOfficialClientForbiddenMessage, newAPIError.Error())
+	require.Equal(t, types.ErrorCode(common.CodexOfficialClientForbiddenType), newAPIError.GetErrorCode())
+	require.Equal(t, common.CodexOfficialClientForbiddenType, newAPIError.ToOpenAIError().Type)
+}
+
 func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
 	withDebugEnabled(t, true)
 

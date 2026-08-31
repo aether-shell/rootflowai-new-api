@@ -35,8 +35,6 @@ func TestChannelErrorForUserClassifiesMultilingualContentAudit(t *testing.T) {
 		{name: "English structured cyber policy", statusCode: 403, message: "request rejected", typeCode: "session_blocked_by_cyber_policy", wantPublic: true},
 		{name: "wrapped cyber policy", statusCode: 500, message: `responses stream error: {"error":{"code":"cyber_policy","message":"This content was flagged for possible cybersecurity risk"}}`, wantPublic: true},
 		{name: "localized unknown forbidden", statusCode: 403, message: "forbidden by provider", wantPublic: false},
-		{name: "unsupported model", statusCode: 403, message: `The current group does not support the requested model "gpt-test"`, wantPublic: false},
-		{name: "session group conflict", statusCode: 403, message: "This session already belongs to another group and cannot switch to the current session-isolated group", wantPublic: false},
 		{name: "English balance", statusCode: 403, message: "Insufficient account balance", wantPublic: false},
 		{name: "Chinese balance", statusCode: 403, message: "账户余额不足，请充值", wantPublic: false},
 		{name: "English structured billing", statusCode: 403, message: "request rejected", typeCode: "billing_error", wantPublic: false},
@@ -91,6 +89,117 @@ func TestChannelErrorForUserPreservesSanitizedBadRequest(t *testing.T) {
 	require.NotContains(t, publicErr.Error(), "channel-123456")
 	require.Empty(t, publicErr.Metadata)
 	require.Empty(t, publicErr.ToOpenAIError().Metadata)
+}
+
+func TestChannelErrorForUserExposesCodexOfficialClientRestrictionOnly(t *testing.T) {
+	upstreamErr := types.WithOpenAIError(types.OpenAIError{
+		Message: common.CodexOfficialClientForbiddenMessage,
+		Type:    common.CodexOfficialClientForbiddenType,
+		Code:    common.CodexOfficialClientForbiddenType,
+	}, http.StatusForbidden)
+
+	publicErr := ChannelErrorForUser(upstreamErr, "rf_test")
+
+	require.Equal(t, http.StatusForbidden, publicErr.StatusCode)
+	require.Equal(t, types.ErrorCode(common.CodexOfficialClientForbiddenType), publicErr.GetErrorCode())
+	require.Equal(t, common.CodexOfficialClientForbiddenType, publicErr.ToOpenAIError().Type)
+	require.Equal(t, common.CodexOfficialClientForbiddenMessage+" (request id: rf_test)", publicErr.Error())
+	require.True(t, types.IsSkipRetryError(publicErr))
+
+	otherForbidden := types.WithOpenAIError(types.OpenAIError{
+		Message: "Account is forbidden",
+		Type:    common.CodexOfficialClientForbiddenType,
+		Code:    common.CodexOfficialClientForbiddenType,
+	}, http.StatusForbidden)
+	otherPublicErr := ChannelErrorForUser(otherForbidden, "rf_test")
+	require.Equal(t, http.StatusServiceUnavailable, otherPublicErr.StatusCode)
+	require.Equal(t, common.ChannelErrorUserMessage+" (request id: rf_test)", otherPublicErr.Error())
+}
+
+func TestChannelErrorForUserMapsActionableErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		statusCode  int
+		message     string
+		typeCode    string
+		wantStatus  int
+		wantCode    string
+		wantMessage string
+		wantSkip    bool
+	}{
+		{
+			name:        "group model unavailable",
+			statusCode:  http.StatusForbidden,
+			message:     `The current group does not support the requested model "gpt-test". Available models: internal-a`,
+			wantStatus:  http.StatusNotFound,
+			wantCode:    common.ModelNotAvailableType,
+			wantMessage: common.ModelNotAvailableMessage,
+		},
+		{
+			name:        "session group conflict",
+			statusCode:  http.StatusForbidden,
+			message:     "This session already belongs to another group and cannot switch to the current session-isolated group",
+			wantStatus:  http.StatusConflict,
+			wantCode:    common.SessionGroupConflictType,
+			wantMessage: common.SessionGroupConflictMessage,
+			wantSkip:    true,
+		},
+		{
+			name:        "context length",
+			statusCode:  http.StatusInternalServerError,
+			message:     "The request does not leave enough room in the model's context window for a response.",
+			typeCode:    common.ContextLengthExceededType,
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    common.ContextLengthExceededType,
+			wantMessage: common.ContextLengthExceededMessage,
+			wantSkip:    true,
+		},
+		{
+			name:        "gateway timeout",
+			statusCode:  http.StatusGatewayTimeout,
+			message:     "Request did not complete within 900 seconds and was aborted by the gateway",
+			wantStatus:  http.StatusGatewayTimeout,
+			wantCode:    common.GatewayTimeoutType,
+			wantMessage: common.GatewayTimeoutMessage,
+		},
+		{
+			name:        "user quota",
+			statusCode:  http.StatusForbidden,
+			message:     "用户额度不足, 剩余额度: -1",
+			typeCode:    "insufficient_user_quota",
+			wantStatus:  http.StatusForbidden,
+			wantCode:    common.InsufficientQuotaType,
+			wantMessage: common.InsufficientQuotaMessage,
+			wantSkip:    true,
+		},
+		{
+			name:        "Claude official client",
+			statusCode:  http.StatusForbidden,
+			message:     "Request blocked: this endpoint only accepts requests from the official Claude Code CLI.",
+			wantStatus:  http.StatusForbidden,
+			wantCode:    common.OfficialClientRequiredType,
+			wantMessage: common.OfficialClientRequiredMessage,
+			wantSkip:    true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			upstreamErr := types.WithOpenAIError(types.OpenAIError{
+				Message: test.message,
+				Type:    test.typeCode,
+				Code:    test.typeCode,
+			}, test.statusCode)
+			publicErr := ChannelErrorForUser(upstreamErr, "rf_test")
+
+			require.Equal(t, test.wantStatus, publicErr.StatusCode)
+			require.Equal(t, types.ErrorCode(test.wantCode), publicErr.GetErrorCode())
+			require.Equal(t, test.wantMessage+" (request id: rf_test)", publicErr.Error())
+			require.Equal(t, test.wantSkip, types.IsSkipRetryError(publicErr))
+			require.NotContains(t, publicErr.Error(), "internal-a")
+			require.NotContains(t, publicErr.Error(), "900")
+		})
+	}
 }
 
 func TestChannelErrorForUserPreservesClaudeBadRequestShape(t *testing.T) {
