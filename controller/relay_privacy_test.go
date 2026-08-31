@@ -131,6 +131,17 @@ func TestSelectFinalChannelErrorPrefersActionableBadRequest(t *testing.T) {
 	require.Same(t, badRequest, preferredChannelErrorForUser(serviceUnavailable, badRequest))
 }
 
+func TestSelectFinalChannelErrorPrefersEarlierMappedActionableError(t *testing.T) {
+	modelUnavailable := types.WithOpenAIError(types.OpenAIError{
+		Message: `The current group does not support the requested model "gpt-test"`,
+	}, http.StatusForbidden)
+	serviceUnavailable := types.WithOpenAIError(types.OpenAIError{
+		Message: "service temporarily unavailable",
+	}, http.StatusServiceUnavailable)
+
+	require.Same(t, modelUnavailable, preferredChannelErrorForUser(serviceUnavailable, modelUnavailable))
+}
+
 func TestSelectFinalChannelErrorDoesNotOverrideContentAudit(t *testing.T) {
 	badRequest := types.WithOpenAIError(types.OpenAIError{
 		Message: "invalid parameter",

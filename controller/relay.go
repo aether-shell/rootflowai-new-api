@@ -227,7 +227,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
-	var lastPublicBadRequest *types.NewAPIError
+	var lastActionableChannelError *types.NewAPIError
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
@@ -276,8 +276,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
-		if service.IsPublicChannelBadRequest(newAPIError) {
-			lastPublicBadRequest = newAPIError
+		if service.IsPublicChannelBadRequest(newAPIError) || service.ShouldPreferMappedChannelError(newAPIError) {
+			lastActionableChannelError = newAPIError
 		}
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
@@ -286,7 +286,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 	}
-	publicChannelError = preferredChannelErrorForUser(newAPIError, lastPublicBadRequest)
+	publicChannelError = preferredChannelErrorForUser(newAPIError, lastActionableChannelError)
 
 	useChannel := c.GetStringSlice("use_channel")
 	if len(useChannel) > 1 {
@@ -376,11 +376,11 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
-func preferredChannelErrorForUser(current *types.NewAPIError, lastBadRequest *types.NewAPIError) *types.NewAPIError {
-	if current == nil || lastBadRequest == nil || service.ShouldPreferMappedChannelError(current) {
+func preferredChannelErrorForUser(current *types.NewAPIError, lastActionable *types.NewAPIError) *types.NewAPIError {
+	if current == nil || lastActionable == nil || service.ShouldPreferMappedChannelError(current) {
 		return nil
 	}
-	return lastBadRequest
+	return lastActionable
 }
 
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
