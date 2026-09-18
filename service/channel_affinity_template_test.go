@@ -332,3 +332,31 @@ func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {
 	_, exists = info.RuntimeHeadersOverride["x-codex-turn-metadata"]
 	require.False(t, exists)
 }
+
+func TestCodexAutoReviewReusesConversationChannel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setting := operation_setting.GetChannelAffinitySetting()
+	affinityValue := "auto-review-shared-conversation"
+	var rule *operation_setting.ChannelAffinityRule
+	for i := range setting.Rules {
+		if setting.Rules[i].Name == "codex cli trace" {
+			rule = &setting.Rules[i]
+			break
+		}
+	}
+	require.NotNil(t, rule)
+	cache := getChannelAffinityCache()
+	cacheKey := buildChannelAffinityCacheKeySuffix(*rule, "gpt-6-astra", "Codex App", affinityValue)
+	require.NoError(t, cache.SetWithTTL(cacheKey, 409, time.Minute))
+	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{cacheKey}) })
+	for _, modelName := range []string{"gpt-6-astra", "codex-auto-review"} {
+		t.Run(modelName, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"prompt_cache_key":%q}`, affinityValue)))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			channelID, found := GetPreferredChannelByAffinity(ctx, modelName, "Codex App")
+			require.True(t, found)
+			require.Equal(t, 409, channelID)
+		})
+	}
+}
