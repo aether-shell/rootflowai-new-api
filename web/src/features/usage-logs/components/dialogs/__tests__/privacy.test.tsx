@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import i18next from 'i18next'
 import { beforeAll, describe, expect, test } from 'vitest'
@@ -55,7 +56,19 @@ describe('usage log details privacy', () => {
 
   test('shows channel diagnostics in the admin scope', () => {
     render(
-      <DetailsDialog log={log} isAdmin open onOpenChange={() => undefined} />
+      <QueryClientProvider
+        client={
+          new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        }
+      >
+        <DetailsDialog
+          isRoot={false}
+          log={log}
+          isAdmin
+          open
+          onOpenChange={() => undefined}
+        />
+      </QueryClientProvider>
     )
 
     expect(screen.getByText('channel-request-secret')).toBeInTheDocument()
@@ -65,12 +78,19 @@ describe('usage log details privacy', () => {
 
   test('does not render channel diagnostics outside the admin scope', () => {
     render(
-      <DetailsDialog
-        log={log}
-        isAdmin={false}
-        open
-        onOpenChange={() => undefined}
-      />
+      <QueryClientProvider
+        client={
+          new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        }
+      >
+        <DetailsDialog
+          isRoot={false}
+          log={log}
+          isAdmin={false}
+          open
+          onOpenChange={() => undefined}
+        />
+      </QueryClientProvider>
     )
 
     expect(screen.queryByText('channel-request-secret')).not.toBeInTheDocument()

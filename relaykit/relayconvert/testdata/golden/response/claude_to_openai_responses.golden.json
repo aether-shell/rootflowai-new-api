@@ -64,6 +64,7 @@
     },
     "prompt_tokens_details": {
       "cached_tokens": 0,
+      "cached_creation_tokens": 2,
       "text_tokens": 0,
       "audio_tokens": 0,
       "image_tokens": 0

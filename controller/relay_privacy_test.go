@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -18,7 +19,7 @@ func TestShouldRetryStopsAfterStreamResponseStarted(t *testing.T) {
 	c.Set(common.StreamResponseStartedKey, true)
 	err := types.NewOpenAIError(errors.New("upstream failed"), types.ErrorCodeBadResponse, 503)
 
-	require.False(t, shouldRetry(c, err, 2))
+	require.False(t, service.ShouldRetryRelayError(c, err, 2))
 }
 
 func TestShouldRetryStopsForContentAudit(t *testing.T) {
@@ -26,7 +27,7 @@ func TestShouldRetryStopsForContentAudit(t *testing.T) {
 	auditErr := types.WithOpenAIError(types.OpenAIError{
 		Message: common.ContentAuditUserMessage,
 	}, http.StatusForbidden)
-	require.False(t, shouldRetry(c, auditErr, 2))
+	require.False(t, service.ShouldRetryRelayError(c, auditErr, 2))
 }
 
 func TestShouldRetryStopsForCodexOfficialClientRestriction(t *testing.T) {
@@ -37,7 +38,7 @@ func TestShouldRetryStopsForCodexOfficialClientRestriction(t *testing.T) {
 		Code:    common.CodexOfficialClientForbiddenType,
 	}, http.StatusForbidden)
 
-	require.False(t, shouldRetry(c, err, 2))
+	require.False(t, service.ShouldRetryRelayError(c, err, 2))
 }
 
 func TestShouldRetryAllowsModelUnavailableAcrossChannels(t *testing.T) {
@@ -50,7 +51,7 @@ func TestShouldRetryAllowsModelUnavailableAcrossChannels(t *testing.T) {
 		Message: `The current group does not support the requested model "gpt-test"`,
 	}, http.StatusForbidden)
 
-	require.True(t, shouldRetry(c, err, 2))
+	require.True(t, service.ShouldRetryRelayError(c, err, 2))
 }
 
 func TestShouldRetryStopsForDeterministicMappedErrors(t *testing.T) {
@@ -89,7 +90,7 @@ func TestShouldRetryStopsForDeterministicMappedErrors(t *testing.T) {
 				Message: test.message,
 				Code:    test.code,
 			}, test.statusCode)
-			require.False(t, shouldRetry(c, err, 2))
+			require.False(t, service.ShouldRetryRelayError(c, err, 2))
 		})
 	}
 }
@@ -103,7 +104,7 @@ func TestShouldRetryKeepsGlobalTimeoutNoRetryPolicy(t *testing.T) {
 	err := types.WithOpenAIError(types.OpenAIError{
 		Message: "Request did not complete within 900 seconds and was aborted by the gateway",
 	}, http.StatusGatewayTimeout)
-	require.False(t, shouldRetry(c, err, 2))
+	require.False(t, service.ShouldRetryRelayError(c, err, 2))
 }
 
 func TestShouldRetryKeepsConfiguredBadRequestRetry(t *testing.T) {
@@ -116,7 +117,7 @@ func TestShouldRetryKeepsConfiguredBadRequestRetry(t *testing.T) {
 		Message: "Thinking level MINIMAL is not supported",
 	}, http.StatusBadRequest)
 
-	require.True(t, shouldRetry(c, err, 2))
+	require.True(t, service.ShouldRetryRelayError(c, err, 2))
 }
 
 func TestSelectFinalChannelErrorPrefersActionableBadRequest(t *testing.T) {

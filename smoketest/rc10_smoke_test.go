@@ -20,8 +20,6 @@ import (
 	"github.com/QuantumNous/new-api/router"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
-	"github.com/gin-contrib/sessions"
-	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -33,8 +31,9 @@ type apiResponse struct {
 }
 
 type sessionState struct {
-	Cookies []*http.Cookie
-	UserID  int
+	AccessToken string
+	Cookies     []*http.Cookie
+	UserID      int
 }
 
 func TestRC10StreamBillingSmoke(t *testing.T) {
@@ -102,14 +101,18 @@ func TestRC10StreamBillingSmoke(t *testing.T) {
 	})
 	require.True(t, loginResp.Success, loginResp.Message)
 	var loginData struct {
-		ID int `json:"id"`
+		AccessToken string `json:"access_token"`
+		User        struct {
+			ID int `json:"id"`
+		} `json:"user"`
 	}
 	require.NoError(t, json.Unmarshal(loginResp.Data, &loginData))
 	session := sessionState{
-		Cookies: loginRecorder.Result().Cookies(),
-		UserID:  loginData.ID,
+		Cookies:     loginRecorder.Result().Cookies(),
+		UserID:      loginData.User.ID,
+		AccessToken: loginData.AccessToken,
 	}
-	require.NotEmpty(t, session.Cookies)
+	require.NotEmpty(t, session.AccessToken)
 
 	selfResp, _ := doRequest(t, engine, http.MethodGet, "/api/user/self", session, nil, "")
 	require.True(t, selfResp.Success, selfResp.Message)
@@ -250,16 +253,6 @@ func newSmokeRouter() *gin.Engine {
 	engine.Use(middleware.RequestId())
 	engine.Use(middleware.Version())
 
-	store := cookie.NewStore([]byte(common.SessionSecret))
-	store.Options(sessions.Options{
-		Path:     "/",
-		MaxAge:   2592000,
-		HttpOnly: true,
-		Secure:   false,
-		SameSite: http.SameSiteStrictMode,
-	})
-	engine.Use(sessions.Sessions("session", store))
-
 	router.SetApiRouter(engine)
 	router.SetRelayRouter(engine)
 	return engine
@@ -284,6 +277,9 @@ func doRequest(t *testing.T, engine *gin.Engine, method string, target string, s
 	req := httptest.NewRequest(method, target, body)
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	if session.AccessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+session.AccessToken)
 	}
 	if session.UserID > 0 {
 		req.Header.Set("New-Api-User", itoa(session.UserID))
