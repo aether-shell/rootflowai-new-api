@@ -44,6 +44,9 @@ func TestFormatUserLogsSanitizesHistoricalChannelErrors(t *testing.T) {
 		"channel_id":   77,
 		"channel_name": "vendor-a",
 		"channel_type": 1,
+		"content_parts": []*common.Message{common.NewMessage("Upstream error: {{error}}", map[string]any{
+			"error": "balance exhausted at https://vendor.example/private?key=upstream-secret",
+		})},
 		"admin_info": map[string]interface{}{
 			"original_error": "balance exhausted",
 			"use_channel":    []int{77, 88},
@@ -73,6 +76,8 @@ func TestFormatUserLogsSanitizesHistoricalChannelErrors(t *testing.T) {
 	require.NotContains(t, parsed, "channel_id")
 	require.NotContains(t, parsed, "channel_name")
 	require.NotContains(t, parsed, "channel_type")
+	require.NotContains(t, parsed, "content_parts", "structured content must not bypass the sanitized user-visible message")
+	require.NotContains(t, logs[0].Other, "upstream-secret")
 }
 
 func TestFormatUserLogsPreservesPublicContentAuditNotice(t *testing.T) {

@@ -240,7 +240,6 @@ func initSmokeEnv(t *testing.T, dbPath string) {
 	logger.SetupLogger()
 	ratio_setting.InitRatioSettings()
 	service.InitHttpClient()
-	service.InitTokenEncoders()
 	require.NoError(t, model.InitDB())
 	model.CheckSetup()
 	model.InitOptionMap()
