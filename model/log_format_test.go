@@ -205,13 +205,13 @@ func TestFormatUserLogsRestoresMappedErrors(t *testing.T) {
 			wantMessage:    common.ContextLengthExceededMessage,
 		},
 		{
-			name:           "user quota",
+			name:           "upstream user quota",
 			originalStatus: http.StatusForbidden,
 			originalCode:   "insufficient_user_quota",
 			originalError:  "status_code=403, 用户额度不足, 剩余额度: -1",
-			wantStatus:     http.StatusForbidden,
-			wantCode:       common.InsufficientQuotaType,
-			wantMessage:    common.InsufficientQuotaMessage,
+			wantStatus:     http.StatusServiceUnavailable,
+			wantCode:       "service_unavailable",
+			wantMessage:    common.ChannelErrorUserMessage,
 		},
 		{
 			name:           "Claude official client",

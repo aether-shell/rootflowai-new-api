@@ -134,12 +134,10 @@ func TestClassifyPublicChannelError(t *testing.T) {
 			wantPublic: true,
 		},
 		{
-			name:       "user quota only",
+			name:       "upstream user quota stays private",
 			statusCode: http.StatusForbidden,
 			structured: "openai_error insufficient_user_quota",
 			message:    "用户额度不足, 剩余额度: -1",
-			want:       PublicChannelErrorContract{Message: InsufficientQuotaMessage, Type: InsufficientQuotaType, Code: InsufficientQuotaType, StatusCode: http.StatusForbidden, StopRetry: true},
-			wantPublic: true,
 		},
 		{
 			name:       "model unsupported by account wording",

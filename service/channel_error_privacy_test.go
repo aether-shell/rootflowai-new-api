@@ -6,7 +6,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -163,14 +166,13 @@ func TestChannelErrorForUserMapsActionableErrors(t *testing.T) {
 			wantMessage: common.GatewayTimeoutMessage,
 		},
 		{
-			name:        "user quota",
+			name:        "upstream user quota",
 			statusCode:  http.StatusForbidden,
 			message:     "用户额度不足, 剩余额度: -1",
 			typeCode:    "insufficient_user_quota",
-			wantStatus:  http.StatusForbidden,
-			wantCode:    common.InsufficientQuotaType,
-			wantMessage: common.InsufficientQuotaMessage,
-			wantSkip:    true,
+			wantStatus:  http.StatusServiceUnavailable,
+			wantCode:    string(types.ErrorCodeServiceUnavailable),
+			wantMessage: common.ChannelErrorUserMessage,
 		},
 		{
 			name:        "Claude official client",
@@ -264,6 +266,38 @@ func TestParseUpstreamStreamErrorUsesStructuredFieldsOnly(t *testing.T) {
 				return
 			}
 			require.Nil(t, err)
+		})
+	}
+}
+
+func TestUpstreamQuotaFailureKeepsDiagnosticsPrivateAndAllowsConfiguredRetry(t *testing.T) {
+	previous := operation_setting.AutomaticRetryStatusCodeRanges
+	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 403, End: 403}}
+	t.Cleanup(func() { operation_setting.AutomaticRetryStatusCodeRanges = previous })
+
+	for _, tc := range []struct {
+		name, code, message string
+	}{
+		{"upstream user quota", "insufficient_user_quota", "用户额度不足, 剩余额度: ＄0.000000 (request id: upstream-quota-123456)"},
+		{"upstream precharge", "", "预扣费额度失败, 用户剩余额度: ＄0.000000 (request id: upstream-quota-123456)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstreamErr := types.WithOpenAIError(types.OpenAIError{
+				Message: tc.message,
+				Type:    "openai_error",
+				Code:    tc.code,
+			}, http.StatusForbidden)
+			publicErr := ChannelErrorForUser(upstreamErr, "rootflow-request")
+			assert.Equal(t, http.StatusServiceUnavailable, publicErr.StatusCode)
+			assert.Equal(t, types.ErrorCodeServiceUnavailable, publicErr.GetErrorCode())
+			assert.Equal(t, common.ChannelErrorUserMessage+" (request id: rootflow-request)", publicErr.Error())
+			assert.False(t, ShouldPreferMappedChannelError(upstreamErr))
+			assert.Equal(t, tc.message, upstreamErr.ToOpenAIError().Message, "administrator diagnostics retain the upstream cause")
+			assert.Equal(t, PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}, DecideRelayRetry(&gin.Context{}, upstreamErr, 2))
+			assert.Equal(t, "attempt_budget_exhausted", DecideRelayRetry(&gin.Context{}, upstreamErr, 0).Reason)
+			started := &gin.Context{}
+			started.Set(common.StreamResponseStartedKey, true)
+			assert.Equal(t, "response_started", DecideRelayRetry(started, upstreamErr, 2).Reason)
 		})
 	}
 }
