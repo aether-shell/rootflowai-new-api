@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -12,6 +13,30 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/gin-gonic/gin"
 )
+
+func TestTurnstileQueriesReachHandlerWithoutEnteringAccessLog(t *testing.T) {
+	var logs bytes.Buffer
+	old := gin.DefaultWriter
+	gin.DefaultWriter = &logs
+	t.Cleanup(func() { gin.DefaultWriter = old })
+	for _, path := range []string{"/api/user/login", "/api/user/register", "/api/user/checkin", "/api/verification", "/api/reset_password", "/api/user/reset"} {
+		router := gin.New()
+		SetUpLogger(router)
+		router.GET(path, func(c *gin.Context) {
+			if c.Query("turnstile") != "sensitive-token" {
+				t.Error("handler lost verification token")
+			}
+			c.Status(204)
+		})
+		router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path+"?turnstile=sensitive-token&email=private@example.invalid", nil))
+	}
+	if strings.Contains(logs.String(), "sensitive-token") || strings.Contains(logs.String(), "private@example") {
+		t.Fatal("authentication query leaked to access log")
+	}
+	if !strings.Contains(logs.String(), "/api/user/login") {
+		t.Fatal("request path should remain observable")
+	}
+}
 
 type turnstileTestTransport func(*http.Request) (*http.Response, error)
 
