@@ -29,9 +29,13 @@ func SetUpLogger(server *gin.Engine) {
 			tag = "web"
 		}
 		path := param.Path
-		// OAuth callbacks carry one-time codes and state in the query string.
+		// Authentication endpoints carry one-time tokens and email addresses in queries.
 		// Redact the log value only; the handler still needs the original query.
-		if strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") {
+		cleanPath, _, _ := strings.Cut(path, "?")
+		authQuery := cleanPath == "/api/user/login" || cleanPath == "/api/user/register" ||
+			cleanPath == "/api/user/checkin" || cleanPath == "/api/verification" ||
+			cleanPath == "/api/reset_password" || cleanPath == "/api/user/reset"
+		if authQuery || strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") {
 			path, _, _ = strings.Cut(path, "?")
 		}
 		return fmt.Sprintf("[GIN] %s | %s | %s | %3d | %13v | %15s | %7s %s\n",
