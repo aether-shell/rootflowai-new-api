@@ -257,24 +257,44 @@ func SendPasswordResetEmail(c *gin.Context) {
 	}
 	if user, err := model.GetUniqueUserByEmail(email); err == nil {
 		code := common.GenerateVerificationCode(0)
-		common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
-		link := fmt.Sprintf("%s/user/reset?email=%s&token=%s", system_setting.ServerAddress, email, code)
+		common.OptionMapRWMutex.RLock()
+		serverAddress, systemName := system_setting.ServerAddress, common.SystemName
+		common.OptionMapRWMutex.RUnlock()
+		link, linkErr := common.PasswordResetURL(serverAddress, email, code)
+		if linkErr != nil {
+			// Configuration failure must not disclose account existence or tokens.
+			logger.LogError(c.Request.Context(), common.LogText("password reset email destination is invalid"))
+			c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+			return
+		}
 		lang := user.GetSetting().Language
 		if lang == "" {
 			lang = i18n.StatedLang(c)
 		}
-		systemName := map[string]any{"SystemName": common.SystemName}
-		linkParams := map[string]any{"Link": link}
-		subject := i18n.Translate(lang, i18n.MsgEmailPasswordResetSubject, systemName)
-		content := fmt.Sprintf("<p>%s</p>"+
-			"<p>%s</p>"+
-			"<p>%s </p>"+
-			"<p>%s</p>",
-			i18n.Translate(lang, i18n.MsgEmailPasswordResetGreeting, systemName),
-			i18n.Translate(lang, i18n.MsgEmailPasswordResetLink, linkParams),
-			i18n.Translate(lang, i18n.MsgEmailPasswordResetLinkFallback, linkParams),
-			i18n.Translate(lang, i18n.MsgEmailPasswordResetValidity, map[string]any{"Minutes": common.VerificationValidMinutes}))
-		err := common.SendEmail(subject, email, content)
+		if lang == "" {
+			lang = i18n.LangZhCN
+		}
+		lang = i18n.ParseAcceptLanguage(lang)
+		name := map[string]any{"SystemName": systemName}
+		subject := i18n.Translate(lang, i18n.MsgEmailPasswordResetSubject, name)
+		htmlBody, textBody, renderErr := common.RenderPasswordResetEmail(common.PasswordResetEmailData{
+			Language: lang, SystemName: systemName, ResetURL: link,
+			Title:    i18n.Translate(lang, i18n.MsgEmailPasswordResetTitle),
+			Intro:    i18n.Translate(lang, i18n.MsgEmailPasswordResetIntro),
+			Action:   i18n.Translate(lang, i18n.MsgEmailPasswordResetAction, name),
+			Button:   i18n.Translate(lang, i18n.MsgEmailPasswordResetButton),
+			Validity: i18n.Translate(lang, i18n.MsgEmailPasswordResetExpiry, map[string]any{"Minutes": common.VerificationValidMinutes}),
+			Fallback: i18n.Translate(lang, i18n.MsgEmailPasswordResetFallback),
+			Ignore:   i18n.Translate(lang, i18n.MsgEmailPasswordResetIgnore),
+			Footer:   i18n.Translate(lang, i18n.MsgEmailPasswordResetFooter),
+		})
+		if renderErr != nil {
+			logger.LogError(c.Request.Context(), common.LogText("password reset email rendering failed"))
+			c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+			return
+		}
+		common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
+		err := common.SendEmailWithText(subject, email, htmlBody, textBody)
 		if err != nil {
 			logger.LogError(c.Request.Context(), common.LogText("failed to send password reset email to %s: %s", email, err.Error()))
 		}

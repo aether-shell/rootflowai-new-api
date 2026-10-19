@@ -51,6 +51,14 @@ email.password_reset.greeting: "您好，你正在进行{{.SystemName}}密码重
 email.password_reset.link: "点击 <a href='{{.Link}}'>此处</a> 进行密码重置。"
 email.password_reset.link_fallback: "如果链接无法点击，请尝试点击下面的链接或将其复制到浏览器中打开：<br> {{.Link}}"
 email.password_reset.validity: "重置链接 {{.Minutes}} 分钟内有效，如果不是本人操作，请忽略。"
+email.password_reset.title: "重置你的密码"
+email.password_reset.intro: "我们收到了你的密码重置请求。"
+email.password_reset.action: "点击下方按钮，前往 {{.SystemName}} 确认重置。"
+email.password_reset.button: "前往重置密码"
+email.password_reset.expiry: "链接 {{.Minutes}} 分钟内有效，完成重置后失效。"
+email.password_reset.fallback: "按钮无法打开？请将下方完整链接复制到浏览器地址栏："
+email.password_reset.ignore: "如果不是你本人发起的请求，请忽略此邮件。你的密码不会因此改变。"
+email.password_reset.footer: "账户安全通知"
 
 # Low-quota notices
 notify.quota_low_title: "您的额度即将用尽"

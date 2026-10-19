@@ -64,6 +64,14 @@ const (
 	MsgEmailPasswordResetLink         = "email.password_reset.link"
 	MsgEmailPasswordResetLinkFallback = "email.password_reset.link_fallback"
 	MsgEmailPasswordResetValidity     = "email.password_reset.validity"
+	MsgEmailPasswordResetTitle        = "email.password_reset.title"
+	MsgEmailPasswordResetIntro        = "email.password_reset.intro"
+	MsgEmailPasswordResetAction       = "email.password_reset.action"
+	MsgEmailPasswordResetButton       = "email.password_reset.button"
+	MsgEmailPasswordResetExpiry       = "email.password_reset.expiry"
+	MsgEmailPasswordResetFallback     = "email.password_reset.fallback"
+	MsgEmailPasswordResetIgnore       = "email.password_reset.ignore"
+	MsgEmailPasswordResetFooter       = "email.password_reset.footer"
 )
 
 // Low-quota notices, in the recipient's saved language

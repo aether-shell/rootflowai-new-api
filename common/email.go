@@ -1,10 +1,16 @@
 package common
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
+	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"slices"
 	"strings"
 	"time"
@@ -76,6 +82,16 @@ func newSMTPClient(addr string) (*smtp.Client, error) {
 }
 
 func SendEmail(subject string, receiver string, content string) error {
+	return sendEmail(subject, receiver, content, nil)
+}
+
+// SendEmailWithText supplies a plain-text alternative without changing the
+// existing HTML-only callers or their SMTP authentication/TLS behavior.
+func SendEmailWithText(subject, receiver, htmlContent, textContent string) error {
+	return sendEmail(subject, receiver, htmlContent, &textContent)
+}
+
+func sendEmail(subject, receiver, content string, textContent *string) error {
 	if SMTPFrom == "" { // for compatibility
 		SMTPFrom = SMTPAccount
 	}
@@ -87,13 +103,42 @@ func SendEmail(subject string, receiver string, content string) error {
 		return NewMessage("SMTP server is not configured")
 	}
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
-	mail := []byte(fmt.Sprintf("To: %s\r\n"+
-		"From: %s <%s>\r\n"+
+	contentHeader := "Content-Type: text/html; charset=UTF-8\r\n"
+	if textContent != nil {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		for _, part := range []struct{ mediaType, body string }{
+			{"text/plain", *textContent}, {"text/html", content},
+		} {
+			header := textproto.MIMEHeader{}
+			header.Set("Content-Type", part.mediaType+"; charset=UTF-8")
+			header.Set("Content-Transfer-Encoding", "quoted-printable")
+			output, err := writer.CreatePart(header)
+			if err != nil {
+				return err
+			}
+			encoded := quotedprintable.NewWriter(output)
+			if _, err = encoded.Write([]byte(part.body)); err != nil {
+				return err
+			}
+			if err = encoded.Close(); err != nil {
+				return err
+			}
+		}
+		if err := writer.Close(); err != nil {
+			return err
+		}
+		content = body.String()
+		contentHeader = "MIME-Version: 1.0\r\nContent-Type: " + mime.FormatMediaType("multipart/alternative", map[string]string{"boundary": writer.Boundary()}) + "\r\n"
+	}
+	from := (&mail.Address{Name: SystemName, Address: SMTPFrom}).String()
+	message := []byte(fmt.Sprintf("To: %s\r\n"+
+		"From: %s\r\n"+
 		"Subject: %s\r\n"+
 		"Date: %s\r\n"+
 		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
-		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
-		receiver, SystemName, SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
+		"%s\r\n%s\r\n",
+		receiver, from, encodedSubject, time.Now().Format(time.RFC1123Z), id, contentHeader, content))
 	auth := getSMTPAuth()
 	addr := fmt.Sprintf("%s:%d", SMTPServer, SMTPPort)
 	to := strings.Split(receiver, ";")
@@ -120,7 +165,7 @@ func SendEmail(subject string, receiver string, content string) error {
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(mail)
+	_, err = w.Write(message)
 	if err != nil {
 		return err
 	}
