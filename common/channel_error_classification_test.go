@@ -20,6 +20,21 @@ func TestSanitizeChannelErrorMessageForUser(t *testing.T) {
 			expected: "Unable to process https://***.com/***/***",
 		},
 		{
+			name:     "plain transport hostname without channel context",
+			message:  "Unable to connect to vendor.example.com",
+			expected: "Unable to connect to ***.***.com",
+		},
+		{
+			name:     "URL punctuation and credentials",
+			message:  `Invalid input (https://user:secret@vendor.example.com/v1/input?key=secret).`,
+			expected: `Invalid input (https://***.com/***/***?key=***).`,
+		},
+		{
+			name:     "websocket URL",
+			message:  `Unable to connect to wss://vendor.example.com/v1/realtime`,
+			expected: `Unable to connect to wss://***.com/***/***`,
+		},
+		{
 			name:     "quoted request id",
 			message:  `Invalid request {"request_id":"channel-request-123456"}`,
 			expected: "Invalid request {}",

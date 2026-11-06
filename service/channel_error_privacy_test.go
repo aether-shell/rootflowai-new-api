@@ -252,6 +252,13 @@ func TestParseUpstreamStreamErrorUsesStructuredFieldsOnly(t *testing.T) {
 	}{
 		{name: "explicit error field", data: `{"error":{"message":"vendor balance exhausted"}}`, wantError: true},
 		{name: "explicit error type", data: `{"type":"upstream_error","message":"internal route"}`, wantError: true},
+		{name: "Responses error", data: `{"type":"error","message":"vendor balance exhausted"}`, wantError: true},
+		{name: "Responses error alias", data: `{"type":"response.error","message":"vendor balance exhausted"}`, wantError: true},
+		{name: "Responses failure", data: `{"type":"response.failed","response":{"error":{"message":"vendor balance exhausted"}}}`, wantError: true},
+		{name: "Responses failed done alias", data: `{"type":"response.done","response":{"status":"failed","error":null}}`, wantError: true},
+		{name: "null error field", data: `{"error":null,"choices":[]}`, wantError: false},
+		{name: "successful terminal null error", data: `{"type":"response.completed","response":{"status":"completed","error":null}}`, wantError: false},
+		{name: "incomplete response", data: `{"type":"response.incomplete","response":{"status":"incomplete","error":null}}`, wantError: false},
 		{name: "message text alone", data: `{"message":"error from upstream"}`, wantError: false},
 		{name: "normal chunk", data: `{"type":"response.output_text.delta","delta":"ok"}`, wantError: false},
 		{name: "invalid JSON", data: `not-json`, wantError: false},
@@ -267,6 +274,22 @@ func TestParseUpstreamStreamErrorUsesStructuredFieldsOnly(t *testing.T) {
 			}
 			require.Nil(t, err)
 		})
+	}
+}
+
+func TestUpstreamStreamErrorPreservesActionableClassification(t *testing.T) {
+	for _, data := range []string{
+		`{"type":"error","code":"context_length_exceeded","message":"Input too long"}`,
+		`{"type":"error","error":{"code":"context_length_exceeded","message":"Input too long"}}`,
+		`{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"Input too long"}}}`,
+	} {
+		err := ParseUpstreamStreamError(data)
+		require.NotNil(t, err)
+		assert.Contains(t, err.Error(), data)
+		publicErr := ChannelErrorForUser(err, "request")
+		assert.Equal(t, http.StatusBadRequest, publicErr.StatusCode)
+		assert.Equal(t, types.ErrorCode(common.ContextLengthExceededType), publicErr.GetErrorCode())
+		assert.Equal(t, common.ContextLengthExceededMessage+" (request id: request)", publicErr.Error())
 	}
 }
 

@@ -93,6 +93,9 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 			info.ObserveResponseModel(streamResp.Response.Model)
 		}
 		service.ObserveResponsesOutcome(info, &streamResp)
+		if streamErr = service.ParseUpstreamStreamError(data); streamErr != nil {
+			break
+		}
 		accumulator.ProcessEvent(&streamResp)
 		switch streamResp.Type {
 		case "response.completed", "response.done", "response.incomplete":
@@ -105,14 +108,6 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 					finalResponse.Status = []byte(`"incomplete"`)
 				}
 			}
-		case "response.failed", "response.error":
-			if streamResp.Response != nil {
-				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
-					streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
-					break
-				}
-			}
-			streamErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResp.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 		}
 		if streamErr != nil || finalResponse != nil {
 			break
@@ -217,8 +212,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false
 		}
-		c.Render(-1, common.CustomEvent{Data: "data: " + string(geminiResponseStr)})
-		_ = helper.FlushWriter(c)
+		if err := helper.StringData(c, string(geminiResponseStr)); err != nil {
+			return writeFailed(err)
+		}
 		return true
 	}
 
@@ -279,17 +275,12 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		if streamResp.Response != nil {
 			info.ObserveResponseModel(streamResp.Response.Model)
 		}
-		if streamResp.Type == "response.error" || streamResp.Type == "response.failed" {
+		if upstreamErr := service.ParseUpstreamStreamError(data); upstreamErr != nil {
 			upstreamFailed = true
 			if streamResp.Response != nil {
 				failedUsage = streamResp.Response.Usage
-				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
-					streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
-					stopStream(sr, streamErr)
-					return
-				}
 			}
-			streamErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResp.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			streamErr = upstreamErr
 			stopStream(sr, streamErr)
 			return
 		}
@@ -338,12 +329,15 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				usage.BillingUsage = dto.CloneBillingUsageWithEstimatedCompletion(usage.BillingUsage, usage.CompletionTokens)
 			}
 		}
-		logger.LogError(c, common.LogText("responses stream failed after output was delivered, billing the delivered output: %s", streamErr.Error()))
-		streamErr.SetMessage(common.MessageWithRequestId(streamErr.Error(), c.GetString(common.RequestIdKey)))
-		if info.RelayFormat == types.RelayFormatClaude {
-			c.JSON(streamErr.StatusCode, gin.H{"type": "error", "error": streamErr.ToClaudeError()})
-		} else {
-			c.JSON(streamErr.StatusCode, gin.H{"error": streamErr.ToOpenAIError()})
+		logger.LogError(c, common.LogText("responses stream failed after output was delivered, billing the delivered output: %s", common.LocalLogPreview(streamErr.MaskSensitiveError(common.UpstreamAddresses(c)...))))
+		publicErr := service.ChannelErrorForUser(streamErr, c.GetString(common.RequestIdKey))
+		switch info.RelayFormat {
+		case types.RelayFormatClaude:
+			_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: publicErr.ToClaudeError()})
+		case types.RelayFormatGemini:
+			_ = helper.ObjectData(c, gin.H{"error": gin.H{"code": publicErr.StatusCode, "message": publicErr.Error(), "status": "UNAVAILABLE"}})
+		default:
+			_ = helper.ObjectData(c, gin.H{"error": publicErr.ToOpenAIError()})
 		}
 		return usage, nil
 	}

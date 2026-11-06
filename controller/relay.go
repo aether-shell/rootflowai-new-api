@@ -52,6 +52,8 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 		err = relay.ResponsesHelper(c, info)
 	case relayconstant.RelayModeAlphaSearch:
 		err = relay.AlphaSearchHelper(c, info)
+	case relayconstant.RelayModeToolsSearch, relayconstant.RelayModeToolsFetch:
+		err = relay.DeepSeekToolsHelper(c, info)
 	default:
 		err = relay.TextHelper(c, info)
 	}
@@ -104,43 +106,26 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			} else {
 				responseError.SetMessage(common.MessageWithRequestId(responseError.Error(), requestId))
 			}
-			if c.GetBool(common.StreamResponseStartedKey) && relayFormat != types.RelayFormatOpenAIRealtime {
-				switch relayFormat {
-				case types.RelayFormatClaude:
-					_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: responseError.ToClaudeError()})
-				case types.RelayFormatGemini:
-					status := "UNAVAILABLE"
-					if responseError.StatusCode == http.StatusForbidden {
-						status = "PERMISSION_DENIED"
-					} else if responseError.StatusCode == http.StatusBadRequest {
-						status = "INVALID_ARGUMENT"
-					} else if responseError.StatusCode == http.StatusTooManyRequests {
-						status = "RESOURCE_EXHAUSTED"
-					}
-					_ = helper.ObjectData(c, gin.H{"error": gin.H{"code": responseError.StatusCode, "message": responseError.Error(), "status": status}})
-				default:
-					payload := gin.H{"error": responseError.ToOpenAIError()}
-					if strings.Contains(c.Request.URL.Path, "/responses") {
-						payload["type"] = "error"
-						data, _ := common.Marshal(payload)
-						_ = helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "error"}, string(data))
-					} else {
-						_ = helper.ObjectData(c, payload)
-					}
-				}
+			upstreamURLs := common.UpstreamAddresses(c)
+			if relayFormat != types.RelayFormatOpenAIRealtime && c.Writer.Written() &&
+				strings.HasPrefix(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
+				writeRelayStreamError(c, relayFormat, responseError)
 				return
+			}
+			if relayFormat != types.RelayFormatOpenAIRealtime {
+				c.Header("Content-Type", "application/json; charset=utf-8")
 			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
-				helper.WssError(c, ws, responseError.ToOpenAIError())
+				helper.WssError(c, ws, responseError.ToOpenAIError(upstreamURLs...))
 			case types.RelayFormatClaude:
 				c.JSON(responseError.StatusCode, gin.H{
 					"type":  "error",
-					"error": responseError.ToClaudeError(),
+					"error": responseError.ToClaudeError(upstreamURLs...),
 				})
 			default:
 				c.JSON(responseError.StatusCode, gin.H{
-					"error": responseError.ToOpenAIError(),
+					"error": responseError.ToOpenAIError(upstreamURLs...),
 				})
 			}
 		}
@@ -176,6 +161,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			panic(recovered)
 		}
 	}()
+
+	generalSettings := operation_setting.GetGeneralSetting()
+	if relayFormat == types.RelayFormatClaude && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
+		stopKeepAlive := helper.StartStreamKeepAlive(c, time.Duration(generalSettings.PingIntervalSeconds)*time.Second)
+		defer stopKeepAlive()
+	}
 
 	if newAPIError = relay.PrepareRequestBilling(c, relayInfo); newAPIError != nil {
 		return
@@ -264,6 +255,45 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	if len(useChannel) > 1 {
 		retryLogStr := common.LogText("retry: %s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
 		logger.LogInfo(c, retryLogStr)
+	}
+}
+
+func writeRelayStreamError(c *gin.Context, format types.RelayFormat, apiError *types.NewAPIError) {
+	// 心跳提交响应头后，最终错误继续通过同一个流返回。
+	status, _ := common.GetContextKeyType[*relaycommon.StreamStatus](c, constant.ContextKeyResponseStreamStatus)
+	if status == nil {
+		status = relaycommon.NewStreamStatus()
+		common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, status)
+	}
+	status.MarkFailed(string(apiError.GetErrorCode()), string(apiError.GetErrorType()), apiError.StatusCode)
+	upstreamURLs := common.UpstreamAddresses(c)
+	switch format {
+	case types.RelayFormatClaude:
+		_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: apiError.ToClaudeError(upstreamURLs...)})
+	case types.RelayFormatGemini:
+		status := "UNAVAILABLE"
+		switch apiError.StatusCode {
+		case http.StatusForbidden:
+			status = "PERMISSION_DENIED"
+		case http.StatusBadRequest:
+			status = "INVALID_ARGUMENT"
+		case http.StatusTooManyRequests:
+			status = "RESOURCE_EXHAUSTED"
+		}
+		_ = helper.ObjectData(c, gin.H{"error": gin.H{"code": apiError.StatusCode, "message": apiError.ToOpenAIError(upstreamURLs...).Message, "status": status}})
+	default:
+		payload := gin.H{"error": apiError.ToOpenAIError(upstreamURLs...)}
+		if format == types.RelayFormatOpenAIResponses || strings.Contains(c.Request.URL.Path, "/responses") {
+			payload["type"] = "error"
+			data, err := common.Marshal(payload)
+			if err == nil {
+				_ = helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "error"}, string(data))
+			}
+			return
+		}
+		if err := helper.ObjectData(c, payload); err == nil {
+			helper.Done(c)
+		}
 	}
 }
 
@@ -539,7 +569,9 @@ func executeTaskSubmissionWith(
 	durable := false
 	stage := "start"
 	defer func() {
-		if !durable && relayInfo.Billing != nil {
+		// The client of a relayed event stream already holds the vendor's
+		// work, so the submission is billed instead of refunded.
+		if !durable && relayInfo.Billing != nil && !c.Writer.Written() {
 			diagnostics.refund(stage)
 			relayInfo.Billing.Refund(c)
 		}
@@ -653,17 +685,22 @@ func executeTaskSubmissionWith(
 
 	// Reserve any submit-time upward billing adjustment before persistence.
 	// This keeps insertion failures fully refundable while ensuring settlement
-	// after the barrier normally has a zero positive delta.
+	// after the barrier normally has a zero positive delta. A relayed event
+	// stream is billed even when this reserve fails: settlement then charges
+	// past the available quota, as it does for any usage above its reservation.
 	if relayInfo.Billing != nil {
 		stage = "reserve"
 		diagnostics.reserve("reserve_start", result.Quota)
 		if reserveErr := relayInfo.Billing.Reserve(result.Quota); reserveErr != nil {
 			common.SysError(common.LogText("reserve adjusted task billing error: %s", reserveErr.Error()))
-			taskErr = service.TaskErrorWrapperLocal(errors.New("insufficient quota for adjusted task cost"), string(types.ErrorCodeInsufficientUserQuota), http.StatusForbidden)
-			diagnostics.failed("reserve", "insufficient_quota", taskErr, false)
-			return nil, taskErr
+			if !c.Writer.Written() {
+				taskErr = service.TaskErrorWrapperLocal(errors.New("insufficient quota for adjusted task cost"), string(types.ErrorCodeInsufficientUserQuota), http.StatusForbidden)
+				diagnostics.failed("reserve", "insufficient_quota", taskErr, false)
+				return nil, taskErr
+			}
+		} else {
+			diagnostics.reserve("reserve_complete", result.Quota)
 		}
-		diagnostics.reserve("reserve_complete", result.Quota)
 	}
 	if requestErr := c.Request.Context().Err(); requestErr != nil {
 		diagnostics.cancelled("before_insert", retryParam.GetRetry()+1)
@@ -740,6 +777,15 @@ func executeTaskSubmissionWith(
 		common.SysError(common.LogText("insert task error: %s", insertErr.Error()))
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist task"), "task_insert_failed", http.StatusInternalServerError)
 		diagnostics.failed("insert", "database_error", taskErr, false)
+		// The client of a relayed event stream already holds the vendor's
+		// work, so it is settled and logged without a task row.
+		if c.Writer.Written() {
+			if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
+				common.SysError(common.LogText("settle task billing error: %s", settleErr.Error()))
+				return nil, taskErr
+			}
+			service.LogTaskConsumption(c, relayInfo, task)
+		}
 		return nil, taskErr
 	}
 	durable = true
@@ -753,6 +799,7 @@ func executeTaskSubmissionWith(
 		diagnostics.failed("settle", "billing_error", taskErr, true)
 		return nil, taskErr
 	}
+	perfmetrics.RecordImmediateTaskResult(relayInfo, result.Immediate)
 	if task.Status != model.TaskStatusFailure {
 		service.MarkRequestPolicySuccess(c, nil)
 	} else {
@@ -766,6 +813,11 @@ func executeTaskSubmissionWith(
 
 func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 	diagnostics := newTaskPluginSubmitDiagnostics(c)
+	// A native route that relayed the vendor's event stream has answered.
+	if c.Writer.Written() {
+		diagnostics.present(outcome.Task, "native_stream")
+		return
+	}
 	otherRatios := outcome.RelayInfo.PriceData.OtherRatios()
 	if otherRatios == nil {
 		otherRatios = map[string]float64{}
@@ -782,9 +834,12 @@ func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 				viewValue, valueErr := taskPluginProtocolJSONValue(view)
 				if valueErr == nil {
 					if body, callErr := pinned.Plugin.Engine.CallPath(c.Request.Context(), "native", []string{pinned.Route.Render}, requestContext.JSValue(), viewValue); callErr == nil {
-						diagnostics.present(outcome.Task, "native_presenter")
-						c.JSON(http.StatusOK, body)
-						return
+						if replyErr := middleware.WriteNativeReply(c, http.StatusOK, body); replyErr == nil {
+							diagnostics.present(outcome.Task, "native_presenter")
+							return
+						} else {
+							logger.LogError(c, common.LogText("task plugin native submit presenter failed: %s", replyErr.Error()))
+						}
 					} else {
 						logger.LogError(c, common.LogText("task plugin native submit presenter failed: %s", callErr.Error()))
 					}
@@ -820,6 +875,11 @@ func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 	service.RecordRequestPolicyTermination(c, taskSubmissionAPIError(taskErr))
 	newTaskPluginSubmitDiagnostics(c).presentError(taskErr)
+	// The client of a relayed event stream already has the vendor's events,
+	// including any error event; nothing can follow them.
+	if c.Writer.Written() {
+		return
+	}
 	if middleware.RespondTaskPluginError(c, taskErr) {
 		return
 	}

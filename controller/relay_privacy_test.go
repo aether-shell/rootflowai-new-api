@@ -3,9 +3,12 @@ package controller
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -20,6 +23,35 @@ func TestShouldRetryStopsAfterStreamResponseStarted(t *testing.T) {
 	err := types.NewOpenAIError(errors.New("upstream failed"), types.ErrorCodeBadResponse, 503)
 
 	require.False(t, service.ShouldRetryRelayError(c, err, 2))
+}
+
+func TestShouldRetryAllowsKeepaliveUntilProtocolOutput(t *testing.T) {
+	previous := operation_setting.AutomaticRetryStatusCodeRanges
+	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 503, End: 503}}
+	t.Cleanup(func() { operation_setting.AutomaticRetryStatusCodeRanges = previous })
+	for _, tc := range []struct {
+		name  string
+		write func(*gin.Context) error
+	}{
+		{"chat", func(c *gin.Context) error { return helper.StringData(c, `{"choices":[]}`) }},
+		{"claude", func(c *gin.Context) error { return helper.ClaudeData(c, dto.ClaudeResponse{Type: "message_start"}) }},
+		{"responses", func(c *gin.Context) error {
+			return helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "response.created"}, `{"type":"response.created"}`)
+		}},
+		{"gemini", func(c *gin.Context) error { return helper.ObjectData(c, gin.H{"candidates": []any{}}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/stream", nil)
+			helper.SetEventStreamHeaders(c)
+			err := types.NewOpenAIError(errors.New("upstream failed"), types.ErrorCodeBadResponse, http.StatusServiceUnavailable)
+			require.NoError(t, helper.PingData(c))
+			require.True(t, c.Writer.Written())
+			require.True(t, service.ShouldRetryRelayError(c, err, 2))
+			require.NoError(t, tc.write(c))
+			require.Equal(t, "response_started", service.DecideRelayRetry(c, err, 2).Reason)
+		})
+	}
 }
 
 func TestShouldRetryStopsForContentAudit(t *testing.T) {

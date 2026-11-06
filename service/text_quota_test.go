@@ -110,7 +110,7 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 		usage                                     *dto.Usage
 		audio, stream, refund, insufficient, tool bool
 		realtime, reserveInsufficient             bool
-		wallet, outboundImages                    int
+		wallet, outboundImages, retryReservation  int
 		groupRatio                                float64
 		want                                      int
 		unit                                      billingexpr.BillingUnit
@@ -140,6 +140,8 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 		{name: "image quantity exceeds one-image wallet before submission", expression: `tier("image", fixed(0.04)) * image_count`, requestedImages: 4, wallet: 20000, insufficient: true},
 		{name: "image override reserves extra quantity", expression: `tier("image", fixed(0.04)) * image_count`, requestedImages: 1, outboundImages: 4, want: 80000, unit: billingexpr.BillingUnitRequest},
 		{name: "image override cannot exceed remaining wallet", expression: `tier("image", fixed(0.04)) * image_count`, requestedImages: 1, outboundImages: 4, wallet: 40000, reserveInsufficient: true, refund: true},
+		{name: "task retry holds a pricier channel and refunds all of it", expression: flat, retryReservation: 40000, refund: true},
+		{name: "task retry cannot exceed remaining wallet", expression: flat, retryReservation: 40000, wallet: 20000, reserveInsufficient: true, refund: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			quota := startingQuota
@@ -201,6 +203,17 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 					} else {
 						require.Nil(t, reserveErr)
 						assert.Equal(t, tc.want, info.Billing.GetPreConsumedQuota())
+					}
+				}
+				if tc.retryReservation > 0 {
+					retryErr := PreConsumeBilling(ctx, tc.retryReservation, info)
+					if tc.reserveInsufficient {
+						require.NotNil(t, retryErr)
+						assert.Equal(t, types.ErrorCodeInsufficientUserQuota, retryErr.GetErrorCode())
+						assert.Equal(t, reservation, info.Billing.GetPreConsumedQuota())
+					} else {
+						require.Nil(t, retryErr)
+						assert.Equal(t, tc.retryReservation, info.Billing.GetPreConsumedQuota())
 					}
 				}
 				if tc.refund {
@@ -812,18 +825,22 @@ func TestShouldSuppressZeroCompletionStreamQuota(t *testing.T) {
 		Quota:            45146,
 	}
 
-	t.Run("eof stream without completion is suppressed", func(t *testing.T) {
-		relayInfo := &relaycommon.RelayInfo{
-			IsStream:     true,
-			StreamStatus: relaycommon.NewStreamStatus(),
-		}
-		relayInfo.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+	for _, endReason := range []relaycommon.StreamEndReason{relaycommon.StreamEndReasonEOF, relaycommon.StreamEndReasonTimeout} {
+		t.Run(string(endReason)+" suppresses only nonzero usage without completion", func(t *testing.T) {
+			info := &relaycommon.RelayInfo{IsStream: true, StreamStatus: relaycommon.NewStreamStatus()}
+			info.StreamStatus.SetEndReason(endReason, nil)
 
-		suppress, reason := shouldSuppressZeroCompletionStreamQuota(relayInfo, summary)
+			suppress, reason := shouldSuppressZeroCompletionStreamQuota(info, summary)
+			assert.True(t, suppress)
+			assert.Equal(t, "zero_completion_stream_"+string(endReason), reason)
 
-		require.True(t, suppress)
-		require.Equal(t, "zero_completion_stream_eof", reason)
-	})
+			// Preserve the fixed-price zero-usage boundary even when the
+			// transport ended abnormally; this guard requires nonzero token usage.
+			suppress, reason = shouldSuppressZeroCompletionStreamQuota(info, textQuotaSummary{Quota: 500, FixedPriceBilling: true})
+			assert.False(t, suppress)
+			assert.Empty(t, reason)
+		})
+	}
 
 	t.Run("explicit done is still billable", func(t *testing.T) {
 		relayInfo := &relaycommon.RelayInfo{
@@ -853,6 +870,31 @@ func TestShouldSuppressZeroCompletionStreamQuota(t *testing.T) {
 		require.False(t, suppress)
 		require.Empty(t, reason)
 	})
+
+	for _, outcome := range []string{"failed", "incomplete", "cancelled"} {
+		t.Run("done with "+outcome+" outcome preserves existing charge", func(t *testing.T) {
+			info := &relaycommon.RelayInfo{IsStream: true, StreamStatus: relaycommon.NewStreamStatus()}
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+			switch outcome {
+			case "failed":
+				info.StreamStatus.MarkFailed("upstream_error", "server_error", 0)
+			case "incomplete":
+				info.StreamStatus.MarkIncomplete("max_output_tokens")
+			case "cancelled":
+				info.StreamStatus.MarkCancelled()
+			}
+			for _, empty := range []textQuotaSummary{summary, {Quota: 500, FixedPriceBilling: true}} {
+				suppress, reason := shouldSuppressZeroCompletionStreamQuota(info, empty)
+				assert.False(t, suppress)
+				assert.Empty(t, reason)
+			}
+			withOutput := summary
+			withOutput.CompletionTokens = 1
+			suppress, reason := shouldSuppressZeroCompletionStreamQuota(info, withOutput)
+			assert.False(t, suppress)
+			assert.Empty(t, reason)
+		})
+	}
 
 	t.Run("non-stream zero completion is not handled by stream guard", func(t *testing.T) {
 		relayInfo := &relaycommon.RelayInfo{
@@ -957,6 +999,122 @@ func TestCalculateTextQuotaSummaryBillsOpenAICacheWriteTokens(t *testing.T) {
 		// max(3619-2921-3616, 0) + 2921*0.1 + 3616*1.25 + 36*2 = 4884.1 => 4884
 		require.Equal(t, 4884, summary.Quota)
 	})
+}
+
+func TestCalculateTextQuotaSummaryBillsCacheCreationInputTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(w)
+
+	relayInfo := &relaycommon.RelayInfo{
+		RelayFormat:     types.RelayFormatOpenAI,
+		OriginModelName: "cache-creation-input",
+		PriceData: hosttypes.PriceData{
+			ModelRatio:         1,
+			CompletionRatio:    1,
+			CacheRatio:         0.1,
+			CacheCreationRatio: 1.25,
+			GroupRatioInfo:     hosttypes.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+
+	t.Run("creation tokens billed at creation ratio", func(t *testing.T) {
+		var usage dto.Usage
+		require.NoError(t, common.Unmarshal([]byte(`{"prompt_tokens":1510,"completion_tokens":20,"total_tokens":1530,"prompt_tokens_details":{"cached_tokens":1200,"cache_creation_input_tokens":300,"cache_creation":{"ephemeral_5m_input_tokens":300}}}`), &usage))
+		summary := calculateTextQuotaSummary(ctx, relayInfo, &usage)
+
+		assert.Equal(t, 1510, summary.PromptTokens)
+		assert.Equal(t, 1200, summary.CacheTokens)
+		assert.Equal(t, 300, summary.CacheCreationTokens)
+		assert.Zero(t, summary.CacheCreationTokens5m)
+		assert.Zero(t, summary.CacheCreationTokens1h)
+		// (1510-1200-300) + 1200*0.1 + 300*1.25 + 20 = 525
+		assert.Equal(t, 525, summary.Quota)
+	})
+
+	t.Run("missing creation field stays in prompt price", func(t *testing.T) {
+		var usage dto.Usage
+		require.NoError(t, common.Unmarshal([]byte(`{"prompt_tokens":1510,"completion_tokens":20,"total_tokens":1530,"prompt_tokens_details":{"cached_tokens":1200}}`), &usage))
+		summary := calculateTextQuotaSummary(ctx, relayInfo, &usage)
+
+		assert.Zero(t, summary.CacheCreationTokens)
+		// (1510-1200) + 1200*0.1 + 20 = 450
+		assert.Equal(t, 450, summary.Quota)
+	})
+
+	t.Run("cache write and creation scalar take the larger count", func(t *testing.T) {
+		var usage dto.Usage
+		require.NoError(t, common.Unmarshal([]byte(`{"prompt_tokens":1510,"completion_tokens":20,"total_tokens":1530,"prompt_tokens_details":{"cached_tokens":1200,"cache_write_tokens":100,"cache_creation_input_tokens":300}}`), &usage))
+		summary := calculateTextQuotaSummary(ctx, relayInfo, &usage)
+
+		assert.Equal(t, 300, summary.CacheCreationTokens)
+		assert.Zero(t, summary.CacheCreationTokens5m)
+		assert.Zero(t, summary.CacheCreationTokens1h)
+		assert.Equal(t, 525, summary.Quota)
+	})
+}
+
+// OpenAI 12h cache writes bill at twice the write price and keep their own
+// count in the consume log, with ratio and expression pricing alike.
+func TestPostTextConsumeQuotaBillsOpenAI12hCacheWrites(t *testing.T) {
+	truncate(t)
+	const userID, channelID = 63, 63
+	seedUser(t, userID, 1_000_000)
+	seedChannel(t, channelID)
+	gin.SetMode(gin.TestMode)
+	// The OpenAI prompt caching guide example at gpt-6-astra prices: $10 input,
+	// $1 cached, $12.50 30m write and $25 12h write per 1M tokens.
+	usage := &dto.Usage{PromptTokens: 12000, TotalTokens: 12000, CacheWriteTokens: 5000, PromptTokensDetails: dto.InputTokenDetails{
+		CachedTokens: 4000, CacheWriteTokens: 6000, CacheCreationTokens: 6500, CacheCreationInputTokens: 7000,
+		CacheWriteTokensDetails: &dto.CacheWriteTokenDetails{TTL30mTokens: 3000, TTL12hTokens: 4000},
+	}}
+	usage.NormalizeCacheWriteTokens()
+	for _, tc := range []struct {
+		name      string
+		price     hosttypes.PriceData
+		expr      string
+		ratio12h  float64
+		wantQuota int
+	}{
+		{"configured ratio", hosttypes.PriceData{ModelRatio: 5, CompletionRatio: 5, CacheRatio: 0.1, CacheCreationRatio: 1.25, CacheCreation12hRatio: 2.5, CacheCreationRatioConfigured: true}, "", 2.5, 75750},
+		{"unconfigured ratio", hosttypes.PriceData{ModelRatio: 5, CompletionRatio: 5, CacheRatio: 0.1, CacheCreationRatio: 1.25, CacheCreation12hRatio: 2.5}, "", 2, 62000},
+		{"explicit zero ratio", hosttypes.PriceData{ModelRatio: 5, CompletionRatio: 5, CacheRatio: 0.1, CacheCreationRatioConfigured: true}, "", 0, 7000},
+		{"expression without cc12h", hosttypes.PriceData{}, `tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5)`, 2, 75750},
+		{"expression with cc12h", hosttypes.PriceData{}, `tier("standard", p * 10 + c * 50 + cr * 1 + cc * 12.5 + cc12h * 30)`, 2, 85750},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+			tc.price.GroupRatioInfo = hosttypes.GroupRatioInfo{GroupRatio: 1}
+			info := &relaycommon.RelayInfo{
+				UserId:          userID,
+				OriginModelName: "gpt-6-astra",
+				UsingGroup:      "default",
+				StartTime:       time.Now(),
+				RelayFormat:     types.RelayFormatOpenAIResponses,
+				ChannelMeta:     &relaycommon.ChannelMeta{ChannelId: channelID},
+				PriceData:       tc.price,
+			}
+			if tc.expr != "" {
+				info.TieredBillingSnapshot = makeSnapshot(tc.expr, 1, 0, 0)
+			}
+
+			PostTextConsumeQuota(ctx, info, usage, nil)
+
+			log := getLastLog(t)
+			require.NotNil(t, log)
+			// Alias counts are alternatives: only 7000 writes are billed,
+			// with the 4000 long-lived writes priced at the selected rate.
+			assert.Equal(t, tc.wantQuota, log.Quota)
+			var other map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+			assert.Equal(t, float64(7000), other["cache_creation_tokens"])
+			assert.Equal(t, float64(7000), other["cache_write_tokens"])
+			assert.Equal(t, float64(4000), other["cache_creation_tokens_12h"])
+			assert.Equal(t, tc.ratio12h, other["cache_creation_ratio_12h"])
+		})
+	}
 }
 
 func TestCalculateTextQuotaSummarySeparatesOpenRouterCacheReadFromPromptBilling(t *testing.T) {
@@ -1515,6 +1673,40 @@ func TestCalculateTextQuotaSummaryZeroTokensStillBillsToolSurcharge(t *testing.T
 	assert.Greater(t, summary.Quota, 0, "quota must not be zeroed out for a zero-token web search request")
 	expected := common.QuotaFromDecimal(summary.ToolCallSurchargeQuota)
 	assert.Equal(t, expected, summary.Quota)
+}
+
+func TestClaudeCacheOnlyUsageRemainsBillable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name      string
+		usage     dto.ClaudeUsage
+		wantQuota int
+	}{
+		{name: "one-hour cache write", usage: dto.ClaudeUsage{CacheCreationInputTokens: 20000, CacheCreation: &dto.ClaudeCacheCreationUsage{Ephemeral1hInputTokens: 20000}}, wantQuota: 100000},
+		{name: "five-minute cache write", usage: dto.ClaudeUsage{CacheCreationInputTokens: 100, CacheCreation: &dto.ClaudeCacheCreationUsage{Ephemeral5mInputTokens: 100}}, wantQuota: 313},
+		{name: "cache read", usage: dto.ClaudeUsage{CacheReadInputTokens: 100}, wantQuota: 25},
+		{name: "no usage", usage: dto.ClaudeUsage{}, wantQuota: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			info := &relaycommon.RelayInfo{
+				RelayFormat:     types.RelayFormatClaude,
+				OriginModelName: "claude-opus-4-8",
+				PriceData: hosttypes.PriceData{
+					ModelRatio: 2.5, CompletionRatio: 5, CacheRatio: 0.1,
+					CacheCreationRatio: 1.25, CacheCreation5mRatio: 1.25, CacheCreation1hRatio: 2,
+					GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1},
+				},
+			}
+			usage := &dto.Usage{UsageSemantic: dto.BillingUsageSemanticAnthropic, BillingUsage: dto.NewClaudeMessagesBillingUsage(&tc.usage)}
+			summary := calculateTextQuotaSummary(ctx, info, effectiveBillingUsage(usage))
+			assert.Zero(t, summary.PromptTokens)
+			assert.Zero(t, summary.CompletionTokens)
+			assert.Equal(t, tc.wantQuota, summary.Quota)
+			assert.Equal(t, tc.wantQuota > 0, summary.hasBillableUsage())
+			t.Logf("input=%d output=%d quota=%d", summary.PromptTokens, summary.CompletionTokens, summary.Quota)
+		})
+	}
 }
 
 func TestCalculateTextQuotaSummaryDoesNotApplyRequestMultipliersToToolSurcharge(t *testing.T) {

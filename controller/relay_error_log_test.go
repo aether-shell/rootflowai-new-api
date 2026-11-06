@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -67,7 +66,11 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 		ChannelName: "snapshot-channel",
 		AutoBan:     false,
 	}
-	apiErr := types.NewOpenAIError(errors.New("upstream failed"), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway)
+	apiErr := types.WithOpenAIError(types.OpenAIError{
+		Message: "vendor account balance exhausted",
+		Type:    "upstream_error",
+		Code:    "insufficient_user_quota",
+	}, http.StatusForbidden)
 
 	processChannelError(ctx, channelSnapshot, apiErr, nil)
 
@@ -83,6 +86,10 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	adminInfo, ok := storedOther["admin_info"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, []any{"101"}, adminInfo["use_channel"])
+	assert.Contains(t, adminInfo["original_error"], "vendor account balance exhausted")
+	assert.Equal(t, float64(http.StatusForbidden), adminInfo["original_status_code"])
+	assert.Equal(t, "insufficient_user_quota", adminInfo["original_error_code"])
+	assert.NotContains(t, stored.Content, "vendor account balance exhausted")
 
 	logs, total, err := model.GetUserLogs(7, model.LogFilter{Type: model.LogTypeError}, 0, 10)
 	require.NoError(t, err)
@@ -93,6 +100,8 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	userOther, err := common.StrToMap(logs[0].Other)
 	require.NoError(t, err)
 	assert.NotContains(t, userOther, "admin_info")
+	assert.NotContains(t, logs[0].Content, "vendor account balance exhausted")
+	assert.NotContains(t, logs[0].Other, "insufficient_user_quota")
 	for _, key := range []string{"channel_id", "channel_name", "channel_type"} {
 		assert.NotContains(t, userOther, key)
 	}

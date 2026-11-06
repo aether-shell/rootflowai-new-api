@@ -167,6 +167,27 @@ func TestGeminiResponsesStreamHandlerReturnsOpenAIResponsesSSE(t *testing.T) {
 	)
 }
 
+func TestGeminiResponsesStreamFailureKeepsDiagnosticsPrivate(t *testing.T) {
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(common.RequestIdKey, "gemini-safe-error")
+	info := newGeminiResponsesRelayInfo(true)
+	body := "data: " + `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}` + "\n\n" +
+		"data: " + `{"error":{"code":403,"message":"vendor account balance exhausted","status":"PERMISSION_DENIED"}}` + "\n\n"
+	usage, apiErr := GeminiResponsesStreamHandler(c, info, &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))})
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	assert.Equal(t, 5, usage.TotalTokens)
+	assert.Contains(t, recorder.Body.String(), "event: response.failed")
+	assert.Contains(t, recorder.Body.String(), common.ChannelErrorUserMessage)
+	assert.NotContains(t, recorder.Body.String(), "vendor account balance exhausted")
+	assert.True(t, info.StreamStatus.ResponseFailed())
+}
+
 func newGeminiResponsesRelayInfo(isStream bool) *relaycommon.RelayInfo {
 	return &relaycommon.RelayInfo{
 		IsStream:        isStream,

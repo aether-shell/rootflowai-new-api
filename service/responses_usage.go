@@ -144,7 +144,7 @@ func ObserveResponsesOutcome(info *relaycommon.RelayInfo, event *dto.ResponsesSt
 			reason = event.Response.IncompleteDetails.Reason
 		}
 		info.StreamStatus.MarkIncomplete(reason)
-	case event.Type == "response.cancelled" || event.Type == "response.canceled" || responseStatus == "cancelled":
+	case event.Type == "response.cancelled" || event.Type == "response.canceled" || responseStatus == "cancelled" || responseStatus == "canceled":
 		info.StreamStatus.MarkCancelled()
 	case event.Type == "response.completed" || event.Type == "response.done" || responseStatus == "completed":
 		info.StreamStatus.MarkCompleted()
@@ -158,7 +158,7 @@ func ApplyResponsesUsage(dst *dto.Usage, src *dto.Usage) {
 	src.NormalizeCacheWriteTokens()
 	incoming := relayconvert.NormalizeResponsesUsage(src)
 	if src.InputTokensDetails != nil {
-		inputDetails := *src.InputTokensDetails
+		inputDetails := src.InputTokensDetails.Clone()
 		incoming.InputTokensDetails = &inputDetails
 	}
 	if src.OutputTokensDetails != nil {

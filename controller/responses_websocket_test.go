@@ -942,9 +942,15 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 					require.NoError(t, err)
 					require.NoError(t, response.Body.Close())
 					assert.Equal(t, http.StatusOK, response.StatusCode)
-					if tc.failed && strings.Contains(tc.terminal, `"type":"response.failed"`) {
+					if tc.failed {
 						assert.Contains(t, string(body), `"type":"error"`)
 						assert.NotContains(t, string(body), "sensitive upstream detail")
+						assert.NotContains(t, string(body), "Internal server error")
+						if tc.ignored {
+							assert.Contains(t, string(body), common.ContextLengthExceededMessage)
+						} else {
+							assert.Contains(t, string(body), common.ChannelErrorUserMessage)
+						}
 					} else {
 						assert.Contains(t, string(body), terminal)
 					}
@@ -957,7 +963,9 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 					}
 				}
 				quotas := []int{1000}
-				refundedHTTPFailure := transport == "http-sse" && tc.failed && strings.Contains(tc.terminal, `"type":"response.failed"`)
+				// Native SSE rejects every explicit failure envelope through the
+				// controller's sanitized error/refund path, including flat error events.
+				refundedHTTPFailure := transport == "http-sse" && tc.failed
 				if refundedHTTPFailure {
 					quotas = nil
 				}

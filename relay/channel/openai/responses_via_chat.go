@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -103,7 +104,14 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		return true
 	}
 	failResponsesStream := func(err error) bool {
-		failureResults, handled := state.FailResponsesStream("server_error", err.Error(), "")
+		apiErr := types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		var upstreamErr *types.NewAPIError
+		if errors.As(err, &upstreamErr) {
+			apiErr = upstreamErr
+		}
+		logger.LogError(c, common.LocalLogPreview(apiErr.MaskSensitiveError(common.UpstreamAddresses(c)...)))
+		publicErr := service.ChannelErrorForUser(apiErr, c.GetString(common.RequestIdKey))
+		failureResults, handled := state.FailResponsesStream(string(publicErr.GetErrorCode()), publicErr.Error(), "")
 		if !handled {
 			return false
 		}
@@ -126,20 +134,17 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			return
 		}
 
-		var errorResp dto.OpenAITextResponse
-		if err := common.UnmarshalJsonStr(data, &errorResp); err == nil {
-			if oaiError := errorResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-				if failResponsesStream(fmt.Errorf("%s", oaiError.Message)) {
-					// The client got response.failed, so the request is never
-					// retried; the recorded error keeps the stream failed.
-					upstreamFailure = types.WithOpenAIError(*oaiError, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
-					sr.Stop(upstreamFailure)
-					return
-				}
-				streamErr = types.WithOpenAIError(*oaiError, resp.StatusCode)
-				stopStream(sr, streamErr)
+		if upstreamErr := service.ParseUpstreamStreamError(data); upstreamErr != nil {
+			if failResponsesStream(upstreamErr) {
+				// The client got response.failed, so the request is never
+				// retried; the recorded error keeps the stream failed.
+				upstreamFailure = upstreamErr
+				sr.Stop(upstreamFailure)
 				return
 			}
+			streamErr = upstreamErr
+			stopStream(sr, streamErr)
+			return
 		}
 
 		var chunk dto.ChatCompletionsStreamResponse

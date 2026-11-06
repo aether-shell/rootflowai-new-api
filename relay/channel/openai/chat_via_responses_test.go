@@ -323,6 +323,50 @@ func TestOaiChatToResponsesStreamHandlerRestoresCodexCustomToolCall(t *testing.T
 	)
 }
 
+func TestConvertedResponsesFailureUsesSafeProtocolEvents(t *testing.T) {
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	for _, format := range []types.RelayFormat{types.RelayFormatOpenAI, types.RelayFormatClaude, types.RelayFormatGemini} {
+		t.Run(string(format), func(t *testing.T) {
+			body := strings.Join([]string{
+				`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-test"}}`,
+				`data: {"type":"response.output_text.delta","delta":"hello"}`,
+				`data: {"type":"response.failed","response":{"status":"failed","error":{"message":"vendor account balance exhausted","type":"upstream_error"},"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
+				"",
+			}, "\n\n")
+			c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+			info.RelayFormat = format
+			usage, apiErr := OaiResponsesToChatStreamHandler(c, info, resp)
+			require.Nil(t, apiErr)
+			require.NotNil(t, usage)
+			assert.Equal(t, 5, usage.TotalTokens, "delivered output keeps upstream usage")
+			assert.Contains(t, recorder.Body.String(), "hello")
+			assert.Contains(t, recorder.Body.String(), common.ChannelErrorUserMessage)
+			assert.NotContains(t, recorder.Body.String(), "vendor account balance exhausted")
+			assert.True(t, info.StreamStatus.ResponseFailed())
+			assert.True(t, c.GetBool(common.StreamResponseStartedKey))
+			if format == types.RelayFormatClaude {
+				assert.Contains(t, recorder.Body.String(), "event: error\n")
+			} else {
+				assert.Contains(t, recorder.Body.String(), `data: {"error":`)
+			}
+		})
+	}
+	t.Run("chat error without type converted to Responses", func(t *testing.T) {
+		body := "data: {\"error\":{\"message\":\"vendor account balance exhausted\"}}\n\n"
+		c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+		info.RelayFormat = types.RelayFormatOpenAIResponses
+		usage, apiErr := OaiChatToResponsesStreamHandler(c, info, resp)
+		require.NotNil(t, apiErr)
+		assert.Nil(t, usage)
+		assert.NotContains(t, recorder.Body.String(), "vendor account balance exhausted")
+		assert.False(t, service.ShouldRetryRelayError(c, apiErr, 2))
+		assert.Contains(t, recorder.Body.String(), "event: response.failed")
+		assert.Contains(t, recorder.Body.String(), common.ChannelErrorUserMessage)
+	})
+}
+
 func requireOrderedSubstrings(t *testing.T, s string, parts ...string) {
 	t.Helper()
 
