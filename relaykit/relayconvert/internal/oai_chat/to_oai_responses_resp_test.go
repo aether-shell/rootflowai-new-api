@@ -91,6 +91,27 @@ func TestChatCompletionsResponseToResponsesDropsEmptyNameToolCalls(t *testing.T)
 	assert.Equal(t, usage.BillingUsage, convertedUsage.BillingUsage)
 }
 
+func TestUsageFromChatUsagePreservesCacheCreationInputTokensAlone(t *testing.T) {
+	usage := dto.Usage{PromptTokens: 12, TotalTokens: 12}
+	usage.PromptTokensDetails.CacheCreationInputTokens = 9
+
+	converted := UsageFromChatUsage(&usage)
+
+	require.NotNil(t, converted.InputTokensDetails)
+	assert.Equal(t, 9, converted.InputTokensDetails.CacheCreationInputTokens)
+
+	usage.CacheWriteInputTokens = 11
+	usage.PromptTokensDetails.CachedCreationTokens = 2
+	usage.PromptTokensDetails.CacheCreationTokens = 10
+	usage.PromptTokensDetails.CacheWriteTokensDetails = &dto.CacheWriteTokenDetails{TTL30mTokens: 4, TTL12hTokens: 7}
+	converted = UsageFromChatUsage(&usage)
+	require.NotNil(t, converted.InputTokensDetails)
+	assert.Equal(t, 11, converted.InputTokensDetails.CacheCreationTokensTotal())
+	assert.Equal(t, 7, converted.InputTokensDetails.CacheWrite12hTokens())
+	usage.PromptTokensDetails.CacheWriteTokensDetails.TTL12hTokens = 1
+	assert.Equal(t, 7, converted.InputTokensDetails.CacheWrite12hTokens())
+}
+
 func TestChatCompletionsResponseToResponsesEmitsReasoningSummaryBeforeText(t *testing.T) {
 	message := dto.Message{Role: "assistant", Content: "final answer"}
 	message.ReasoningContent = lo.ToPtr("thinking summary")
@@ -240,6 +261,12 @@ func TestChatCompletionsStreamToResponsesEmitsReasoningSummaryPartLifecycle(t *t
 		responsesEventOutputItemDone,
 		responsesEventCompleted,
 	}, types)
+
+	// The Responses schema requires summary on every reasoning item, including
+	// the one announced before any summary text exists.
+	itemAdded, err := kitutil.Marshal(events[1].Payload)
+	require.NoError(t, err)
+	assert.Contains(t, string(itemAdded), `"summary":[]`)
 
 	partAdded := events[2].Payload
 	assert.Equal(t, "resp_1_reasoning_0", partAdded.ItemID)

@@ -114,6 +114,23 @@ func TestUsageConversionsPreserveCacheWriteTokens(t *testing.T) {
 	require.Equal(t, 200, roundTrip.PromptTokensDetails.CachedCreationTokens)
 	require.Equal(t, 200, roundTrip.InputTokensDetails.CachedCreationTokens)
 	require.True(t, roundTrip.CacheWriteTokensReported)
+
+	// A legacy creation scalar must not hide a larger top-level alias,
+	// including when native passthrough has no BillingUsage sidecar.
+	responsesUsage.CacheWriteInputTokens = 300
+	responsesUsage.InputTokensDetails.CachedCreationTokens = 100
+	responsesUsage.InputTokensDetails.CacheCreationInputTokens = 250
+	responsesUsage.InputTokensDetails.CacheWriteTokensDetails = &dto.CacheWriteTokenDetails{TTL30mTokens: 200, TTL12hTokens: 100}
+	chatUsage = NormalizeResponsesUsage(responsesUsage)
+	assert.Equal(t, 300, chatUsage.PromptTokensDetails.CacheCreationTokensTotal())
+	assert.Equal(t, 100, chatUsage.PromptTokensDetails.CacheWrite12hTokens())
+	assert.True(t, chatUsage.CacheWriteTokensReported)
+	roundTrip = oaichat.UsageFromChatUsage(chatUsage)
+	require.NotNil(t, roundTrip.InputTokensDetails)
+	assert.Equal(t, 300, roundTrip.InputTokensDetails.CacheCreationTokensTotal())
+	assert.Equal(t, 100, roundTrip.InputTokensDetails.CacheWrite12hTokens())
+	responsesUsage.InputTokensDetails.CacheWriteTokensDetails.TTL12hTokens = 1
+	assert.Equal(t, 100, chatUsage.PromptTokensDetails.CacheWrite12hTokens())
 }
 
 func TestResponsesResponseToChatCompletionsPreservesReasoningSummary(t *testing.T) {

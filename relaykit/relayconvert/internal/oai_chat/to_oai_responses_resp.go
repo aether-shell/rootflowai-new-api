@@ -193,12 +193,12 @@ func UsageFromChatUsage(src *dto.Usage) *dto.Usage {
 		src.PromptTokensDetails.AudioTokens != 0 ||
 		src.PromptTokensDetails.CachedCreationTokens != 0 ||
 		src.PromptTokensDetails.CacheWriteTokens != 0 ||
+		src.PromptTokensDetails.CacheCreationInputTokens != 0 ||
 		src.PromptTokensDetails.TextTokens != 0 ||
+		src.PromptTokensDetails.CachedTokensDetails != nil ||
+		normalizedSrc.PromptTokensDetails.CacheWriteTokensDetails != nil ||
 		normalizedSrc.PromptTokensDetails.CachedCreationTokens != 0 {
-		details := src.PromptTokensDetails
-		if details.CachedCreationTokens == 0 {
-			details.CachedCreationTokens = normalizedSrc.PromptTokensDetails.CachedCreationTokens
-		}
+		details := normalizedSrc.PromptTokensDetails.Clone()
 		usage.InputTokensDetails = &details
 	}
 	usage.PromptTokensDetails.CachedCreationTokens = normalizedSrc.PromptTokensDetails.CachedCreationTokens

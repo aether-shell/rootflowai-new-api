@@ -39,7 +39,10 @@ func TestResponsesUsageAccumulatorTerminalAccounting(t *testing.T) {
 			}
 			image := dto.ResponsesOutput{ID: "image-1", Type: dto.ResponsesOutputTypeImageGenerationCall, Status: "completed", Result: "image-data"}
 			accumulator.Observe(&dto.ResponsesStreamResponse{Type: dto.ResponsesOutputTypeItemDone, Item: &image}, nil)
-			upstream := &dto.Usage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25, InputTokensDetails: &dto.InputTokenDetails{CachedTokens: 4}}
+			upstream := &dto.Usage{InputTokens: 20, OutputTokens: 5, TotalTokens: 25, InputTokensDetails: &dto.InputTokenDetails{
+				CachedTokens: 4, CacheCreationTokens: 6, CacheCreationInputTokens: 9,
+				CacheWriteTokensDetails: &dto.CacheWriteTokenDetails{TTL30mTokens: 5, TTL12hTokens: 4},
+			}}
 			upstream.BillingUsage = dto.NewOpenAIResponsesBillingUsage(upstream)
 			terminal := &dto.ResponsesStreamResponse{
 				Type: tc.eventType,
@@ -57,6 +60,9 @@ func TestResponsesUsageAccumulatorTerminalAccounting(t *testing.T) {
 			assert.Equal(t, 5, usage.CompletionTokens)
 			assert.Equal(t, 25, usage.TotalTokens)
 			assert.Equal(t, 4, usage.PromptTokensDetails.CachedTokens)
+			assert.Equal(t, 9, usage.PromptTokensDetails.CacheCreationTokensTotal())
+			assert.Equal(t, 4, usage.PromptTokensDetails.CacheWrite12hTokens())
+			assert.True(t, usage.CacheWriteTokensReported)
 			require.NotNil(t, usage.BillingUsage)
 			assert.Equal(t, upstream.BillingUsage, usage.BillingUsage)
 			assert.NotSame(t, upstream.BillingUsage, usage.BillingUsage)
@@ -123,6 +129,9 @@ func TestObserveResponsesOutcomeRecordsProtocolFacts(t *testing.T) {
 		{"flat sse error", `{"type":"error","code":"context_length_exceeded","message":"too long"}`, relaycommon.ResponseOutcomeFailed, "context_length_exceeded", "", ""},
 		{"done with failed status", `{"type":"response.done","response":{"status":"failed","error":{"code":"invalid_api_key","type":"invalid_request_error","message":"bad key"}}}`, relaycommon.ResponseOutcomeFailed, "invalid_api_key", "invalid_request_error", ""},
 		{"incomplete keeps reason", `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`, relaycommon.ResponseOutcomeIncomplete, "", "", "max_output_tokens"},
+		{"done with incomplete status", `{"type":"response.done","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`, relaycommon.ResponseOutcomeIncomplete, "", "", "max_output_tokens"},
+		{"done with canceled status", `{"type":"response.done","response":{"status":"canceled"}}`, relaycommon.ResponseOutcomeCancelled, "", "", ""},
+		{"done with cancelled status", `{"type":"response.done","response":{"status":"cancelled"}}`, relaycommon.ResponseOutcomeCancelled, "", "", ""},
 		{"in progress is not terminal", `{"type":"response.created","response":{"status":"in_progress"}}`, relaycommon.ResponseOutcomeUnknown, "", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

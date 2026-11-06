@@ -8,6 +8,8 @@ import (
 
 var (
 	channelErrorStatusPrefix = regexp.MustCompile(`(?i)^\s*status_code\s*=\s*\d{3}\s*,?\s*`)
+	channelErrorURL          = regexp.MustCompile(`(?:https?|wss?)://[^\s"<>{}]+`)
+	channelErrorDomain       = regexp.MustCompile(`\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b`)
 	channelRequestID         = regexp.MustCompile(`(?i)\s*[\(\[]?\s*["']?(?:(?:x|upstream|client)[-_ ]*)?request[-_ ]*id["']?\s*[:=]\s*["']?[a-z0-9][a-z0-9._:-]{5,127}["']?\s*[\)\]]?`)
 )
 
@@ -168,7 +170,15 @@ func SanitizeChannelErrorMessageForUser(message string) string {
 			}
 		}
 	}
-	message = MaskSensitiveInfo(message)
+	// Public errors and historical logs have no reliable channel context. Keep
+	// their stricter policy by treating every reported address as private;
+	// general diagnostic masking may still preserve unrelated documentation URLs.
+	addresses := channelErrorURL.FindAllString(message, -1)
+	for i := range addresses {
+		addresses[i] = strings.TrimRight(addresses[i], ".,;:!?')")
+	}
+	addresses = append(addresses, channelErrorDomain.FindAllString(message, -1)...)
+	message = MaskSensitiveInfo(message, addresses...)
 	message = channelErrorStatusPrefix.ReplaceAllString(message, "")
 	message = channelRequestID.ReplaceAllString(message, "")
 	message = strings.TrimSpace(strings.Trim(message, ",;"))

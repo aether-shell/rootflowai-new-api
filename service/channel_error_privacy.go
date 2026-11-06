@@ -186,15 +186,51 @@ func ChannelErrorForUser(err *types.NewAPIError, requestID string) *types.NewAPI
 // admin-only diagnostic log and is replaced before any client write.
 func ParseUpstreamStreamError(data string) *types.NewAPIError {
 	var payload struct {
-		Type  string          `json:"type"`
-		Error json.RawMessage `json:"error"`
+		Type     string          `json:"type"`
+		Code     any             `json:"code"`
+		Error    json.RawMessage `json:"error"`
+		Response *struct {
+			Status string          `json:"status"`
+			Error  json.RawMessage `json:"error"`
+		} `json:"response"`
 	}
 	if err := common.UnmarshalJsonStr(data, &payload); err != nil {
 		return nil
 	}
 	typ := strings.ToLower(strings.TrimSpace(payload.Type))
-	if len(payload.Error) == 0 && typ != "error" && typ != "upstream_error" {
+	errorField := strings.TrimSpace(string(payload.Error))
+	hasError := errorField != "" && errorField != "null"
+	switch typ {
+	case "error", "upstream_error", "response.error", "response.failed":
+		hasError = true
+	}
+	if strings.HasPrefix(typ, "response.") && payload.Response != nil {
+		nestedError := strings.TrimSpace(string(payload.Response.Error))
+		hasError = hasError || payload.Response.Status == "failed" || (nestedError != "" && nestedError != "null")
+	}
+	if !hasError {
 		return nil
 	}
-	return types.NewOpenAIError(fmt.Errorf("upstream stream error: %s", data), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	// Preserve structured classification (including flat Responses SSE errors)
+	// while keeping the full upstream event available only to diagnostics.
+	details := struct {
+		Type string `json:"type"`
+		Code any    `json:"code"`
+	}{Code: payload.Code}
+	if payload.Response != nil && len(payload.Response.Error) > 0 {
+		_ = common.Unmarshal(payload.Response.Error, &details)
+	} else if len(payload.Error) > 0 {
+		_ = common.Unmarshal(payload.Error, &details)
+	}
+	if details.Type == "" {
+		details.Type = string(types.ErrorTypeUpstreamError)
+	}
+	if details.Code == nil {
+		details.Code = string(types.ErrorCodeBadResponse)
+	}
+	return types.WithOpenAIError(types.OpenAIError{
+		Message: fmt.Sprintf("upstream stream error: %s", data),
+		Type:    details.Type,
+		Code:    details.Code,
+	}, http.StatusInternalServerError)
 }

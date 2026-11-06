@@ -274,9 +274,26 @@ type InputTokenDetails struct {
 	// input_tokens_details.cache_write_tokens (Responses). It is billed at the
 	// cache-creation price.
 	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
-	TextTokens       int `json:"text_tokens"`
-	AudioTokens      int `json:"audio_tokens"`
-	ImageTokens      int `json:"image_tokens"`
+	// CacheWriteTokensDetails splits CacheWriteTokens by cache lifetime.
+	CacheWriteTokensDetails *CacheWriteTokenDetails `json:"cache_write_tokens_details,omitempty"`
+	TextTokens              int                     `json:"text_tokens"`
+	AudioTokens             int                     `json:"audio_tokens"`
+	ImageTokens             int                     `json:"image_tokens"`
+	// CacheCreationInputTokens is already included in prompt_tokens. Billing
+	// takes the largest of this value, CacheWriteTokens, CacheCreationTokens,
+	// and CachedCreationTokens, and does not add them.
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// CacheWriteTokenDetails is OpenAI's split of cache writes by lifetime. The
+// two counts do not overlap and sum to cache_write_tokens.
+type CacheWriteTokenDetails struct {
+	TTL30mTokens int `json:"ttl_30m_tokens"`
+	TTL12hTokens int `json:"ttl_12h_tokens"`
+}
+
+func (d *CacheWriteTokenDetails) HasTokens() bool {
+	return d != nil && (d.TTL30mTokens != 0 || d.TTL12hTokens != 0)
 }
 
 // CachedTokenDetails describes subsets of cached_tokens. Pointers distinguish
@@ -310,23 +327,22 @@ func (d InputTokenDetails) Clone() InputTokenDetails {
 		}
 		d.CachedTokensDetails = &cached
 	}
+	if d.CacheWriteTokensDetails != nil {
+		cacheWrite := *d.CacheWriteTokensDetails
+		d.CacheWriteTokensDetails = &cacheWrite
+	}
 	return d
 }
 
 // CacheCreationTokensTotal returns the cache-write token count regardless of
-// which field the upstream reported it in: Claude-derived conversions populate
-// CachedCreationTokens while OpenAI reports cache_write_tokens natively. Both
-// are billed at the cache-creation price; when both are present the larger
-// value wins so the same tokens are never double-counted. Negative upstream
-// values are clamped to zero so they can never lower a charge.
+// which field the upstream reported it in. Claude-derived conversions populate
+// CachedCreationTokens, OpenAI reports cache_write_tokens, and OpenAI-compatible
+// explicit cache reports cache_creation_input_tokens. All are billed at the
+// cache-creation price. When more than one is present the larger value wins so
+// the same tokens are never double-counted. Negative upstream values are
+// clamped to zero so they can never lower a charge.
 func (d InputTokenDetails) CacheCreationTokensTotal() int {
-	total := d.CachedCreationTokens
-	if d.CacheCreationTokens > total {
-		total = d.CacheCreationTokens
-	}
-	if d.CacheWriteTokens > total {
-		total = d.CacheWriteTokens
-	}
+	total := max(d.CacheWriteTokens, d.CachedCreationTokens, d.CacheCreationTokens, d.CacheCreationInputTokens)
 	if total < 0 {
 		return 0
 	}
@@ -342,11 +358,21 @@ func (u *Usage) NormalizeCacheWriteTokens() {
 
 	var inputCacheWriteTokens int
 	var inputCacheCreationTokens int
+	var inputCacheCreationInputTokens int
 	var inputLegacyCreationTokens int
 	if u.InputTokensDetails != nil {
 		inputCacheWriteTokens = u.InputTokensDetails.CacheWriteTokens
 		inputCacheCreationTokens = u.InputTokensDetails.CacheCreationTokens
+		inputCacheCreationInputTokens = u.InputTokensDetails.CacheCreationInputTokens
 		inputLegacyCreationTokens = u.InputTokensDetails.CachedCreationTokens
+		if details := u.InputTokensDetails.CacheWriteTokensDetails; details != nil {
+			merged := *details
+			if prompt := u.PromptTokensDetails.CacheWriteTokensDetails; prompt != nil {
+				merged.TTL30mTokens = max(merged.TTL30mTokens, prompt.TTL30mTokens)
+				merged.TTL12hTokens = max(merged.TTL12hTokens, prompt.TTL12hTokens)
+			}
+			u.PromptTokensDetails.CacheWriteTokensDetails = &merged
+		}
 	}
 	candidates := []struct {
 		tokens   int
@@ -358,6 +384,8 @@ func (u *Usage) NormalizeCacheWriteTokens() {
 		{tokens: u.CacheWriteInputTokens, reported: true},
 		{tokens: u.PromptTokensDetails.CacheCreationTokens, reported: true},
 		{tokens: inputCacheCreationTokens, reported: true},
+		{tokens: u.PromptTokensDetails.CacheCreationInputTokens, reported: true},
+		{tokens: inputCacheCreationInputTokens, reported: true},
 		{tokens: u.CacheCreationInputTokens, reported: true},
 		{tokens: u.CacheCreationTokens, reported: true},
 		{tokens: u.PromptTokensDetails.CachedCreationTokens},
@@ -380,9 +408,19 @@ func (u *Usage) NormalizeCacheWriteTokens() {
 	if maxReportedTokens > u.PromptTokensDetails.CacheWriteTokens {
 		u.PromptTokensDetails.CacheWriteTokens = maxReportedTokens
 	}
+	u.PromptTokensDetails.CachedCreationTokens = max(u.PromptTokensDetails.CachedCreationTokens, inputLegacyCreationTokens)
 	if u.PromptTokensDetails.CachedCreationTokens <= 0 && maxTokens > 0 {
 		u.PromptTokensDetails.CachedCreationTokens = maxTokens
 	}
+}
+
+// CacheWrite12hTokens returns the 12-hour subset of the cache writes, bounded
+// by CacheCreationTokensTotal so it never bills more writes than reported.
+func (d InputTokenDetails) CacheWrite12hTokens() int {
+	if d.CacheWriteTokensDetails == nil {
+		return 0
+	}
+	return min(max(d.CacheWriteTokensDetails.TTL12hTokens, 0), d.CacheCreationTokensTotal())
 }
 
 type OutputTokenDetails struct {
@@ -506,6 +544,16 @@ func (r ResponsesOutput) MarshalJSON() ([]byte, error) {
 			Error:             r.ItemError,
 			ApprovalRequestID: r.ApprovalRequestID,
 		})
+	case "reasoning":
+		// summary is required on a reasoning item, even before any summary text exists.
+		type responsesOutputAlias ResponsesOutput
+		if len(r.Summary) > 0 {
+			return kitutil.Marshal(responsesOutputAlias(r))
+		}
+		return kitutil.Marshal(struct {
+			responsesOutputAlias
+			Summary []ResponsesReasoningSummaryPart `json:"summary"`
+		}{responsesOutputAlias(r), []ResponsesReasoningSummaryPart{}})
 	default:
 		type responsesOutputAlias ResponsesOutput
 		return kitutil.Marshal(responsesOutputAlias(r))
