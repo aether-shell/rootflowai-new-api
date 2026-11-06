@@ -126,10 +126,6 @@ func ClassifyPublicChannelError(statusCode int, structuredText string, messageTe
 	if strings.Contains(normalizedMessage, "channel does not support /v1/") {
 		return contract(UnsupportedEndpointMessage, UnsupportedEndpointType, http.StatusBadRequest, true)
 	}
-	if strings.Contains(structuredText, "insufficient_user_quota") ||
-		strings.HasPrefix(normalizedMessage, "预扣费额度失败, 用户剩余额度:") {
-		return contract(InsufficientQuotaMessage, InsufficientQuotaType, http.StatusForbidden, true)
-	}
 	if strings.Contains(normalizedMessage, "prompt_cache_breakpoint is not supported") {
 		return contract(UnsupportedParameterMessage, UnsupportedParameterType, http.StatusBadRequest, true)
 	}
