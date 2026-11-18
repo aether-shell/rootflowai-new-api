@@ -2,10 +2,15 @@ package middleware
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -74,6 +79,60 @@ func TestRedisIPRateLimiterThresholdTTLAndNamespace(t *testing.T) {
 	assert.Equal(t, "3", count)
 	assert.Equal(t, 37*time.Second, redisServer.TTL(key))
 	assert.True(t, redisServer.Exists(legacyKey), "the v2 counter must not touch an old list key")
+}
+
+func TestTokenKeyRateLimitExemptsOnlyAuthenticatedPortalProof(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useRateLimitMiniRedis(t)
+	previousEnabled, previousLimit := common.CriticalRateLimitEnable, common.CriticalRateLimitNum
+	common.CriticalRateLimitEnable, common.CriticalRateLimitNum = true, 1
+	t.Cleanup(func() {
+		common.CriticalRateLimitEnable, common.CriticalRateLimitNum = previousEnabled, previousLimit
+	})
+	secret := []byte(strings.Repeat("test", 8))
+	t.Setenv("PORTAL_KEY_RATE_LIMIT_SECRET", hex.EncodeToString(secret))
+	router := gin.New()
+	require.NoError(t, router.SetTrustedProxies(nil))
+	auth := func(ctx *gin.Context) {
+		if ctx.GetHeader("X-Test-Auth") != "authenticated" {
+			ctx.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		ctx.Set("id", 42)
+	}
+	response := func(ctx *gin.Context) { ctx.Status(http.StatusNoContent) }
+	router.POST("/api/token/:id/key", auth, TokenKeyCriticalRateLimit(), response)
+	router.POST("/api/token/batch/keys", auth, CriticalRateLimit(), response)
+	post := func(path, authorization string, proofs ...string) int {
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		request.RemoteAddr = "192.0.2.10:12345"
+		request.Header.Set("X-Test-Auth", authorization)
+		for _, proof := range proofs {
+			request.Header.Add("X-Portal-Key-Proof", proof)
+		}
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		return recorder.Code
+	}
+	proof := func(path string, userID int, timestamp int64) string {
+		mac := hmac.New(sha256.New, secret)
+		_, _ = fmt.Fprintf(mac, "POST\n%s\n%d\n%d", path, userID, timestamp)
+		return fmt.Sprintf("%d.%x", timestamp, mac.Sum(nil))
+	}
+	const keyPath = "/api/token/19/key"
+	const authenticated = "authenticated"
+	now := time.Now().Unix()
+	valid := proof(keyPath, 42, now)
+	assert.Equal(t, http.StatusNoContent, post(keyPath, authenticated))
+	assert.Equal(t, http.StatusTooManyRequests, post(keyPath, authenticated))
+	assert.Equal(t, http.StatusNoContent, post(keyPath, authenticated, valid))
+	assert.Equal(t, http.StatusUnauthorized, post(keyPath, "", valid))
+	assert.Equal(t, http.StatusTooManyRequests, post(keyPath, authenticated, "invalid"))
+	assert.Equal(t, http.StatusTooManyRequests, post(keyPath, authenticated, valid, valid))
+	assert.Equal(t, http.StatusTooManyRequests, post(keyPath, authenticated, proof(keyPath, 43, now)))
+	assert.Equal(t, http.StatusTooManyRequests, post(keyPath, authenticated, proof(keyPath, 42, now-31)))
+	assert.Equal(t, http.StatusTooManyRequests, post("/api/token/20/key", authenticated, valid))
+	assert.Equal(t, http.StatusTooManyRequests, post("/api/token/batch/keys", authenticated, proof("/api/token/batch/keys", 42, now)))
 }
 
 func TestRedisUserRateLimiterUsesSharedFixedWindow(t *testing.T) {
