@@ -43,6 +43,8 @@ func TestChannelErrorForUserClassifiesMultilingualContentAudit(t *testing.T) {
 		{name: "English structured billing", statusCode: 403, message: "request rejected", typeCode: "billing_error", wantPublic: false},
 		{name: "Chinese authentication", statusCode: 403, message: "鉴权失败，请检查密钥", wantPublic: false},
 		{name: "unknown server error", statusCode: 500, message: "provider failed", wantPublic: false},
+		{name: "moderation parameter is not a rejection", statusCode: 400, message: "unsupported image request parameter: moderation", typeCode: "moderation", wantPublic: false},
+		{name: "filter service failure is not a rejection", statusCode: 500, message: "content_filter service unavailable", typeCode: "content_filter", wantPublic: false},
 	}
 
 	for _, test := range tests {

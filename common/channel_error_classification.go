@@ -69,6 +69,11 @@ func containsAnyChannelErrorSignal(text string, signals []string) bool {
 func IsExplicitContentAuditError(structuredText string, messageText string) bool {
 	structuredText = strings.ToLower(structuredText)
 	messageText = strings.ToLower(messageText)
+	// Mentioning a moderation parameter or an unavailable filtering service is
+	// not a moderation decision. Preserve explicit wrapped policy rejections.
+	if containsAnyChannelErrorSignal(messageText, []string{"unsupported image request parameter", "unsupported parameter", "unknown parameter", "service unavailable", "service error"}) {
+		return false
+	}
 	if containsAnyChannelErrorSignal(structuredText, privateChannelErrorCodeSignals) ||
 		containsAnyChannelErrorSignal(messageText, privateChannelErrorMessageSignals) {
 		return false

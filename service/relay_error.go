@@ -1,6 +1,8 @@
 package service
 
 import (
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -23,6 +25,19 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	}
 	if c.GetBool(common.StreamResponseStartedKey) {
 		return PolicyDecision{Action: "stop", Reason: "response_started", Source: "system"}
+	}
+	if c.Request != nil && c.Request.Context().Err() != nil {
+		return PolicyDecision{Action: "stop", Reason: "request_cancelled", Source: "system"}
+	}
+	// Image POSTs can have been accepted even when the response is lost. Never
+	// resubmit an ambiguous generation or an invalid image request automatically.
+	if c.Request != nil && (strings.HasPrefix(c.Request.URL.Path, "/v1/images/") || c.GetBool("image_generation_request")) {
+		if err.StatusCode == http.StatusBadRequest || err.StatusCode == http.StatusUnprocessableEntity || err.StatusCode == http.StatusRequestEntityTooLarge {
+			return PolicyDecision{Action: "stop", Reason: "invalid_image_request", Source: "system"}
+		}
+		if err.StatusCode >= 500 || err.GetErrorCode() == types.ErrorCodeDoRequestFailed || err.GetErrorCode() == types.ErrorCodeReadResponseBodyFailed {
+			return PolicyDecision{Action: "stop", Reason: "image_result_uncertain", Source: "system"}
+		}
 	}
 	if ShouldStopRetryForPublicChannelError(err) {
 		return PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}

@@ -68,10 +68,20 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		playgroundRouter.POST("/chat/completions", controller.Playground)
 	}
+	// Result retrieval must remain possible when the completed generation used
+	// the token's last quota. Reuse the existing read-only token policy, which
+	// still rejects disabled tokens, banned users and disallowed client IPs.
+	imageRecoveryRouter := router.Group("/v1/images")
+	imageRecoveryRouter.Use(middleware.RouteTag("relay"), middleware.TokenAuthReadOnly())
+	imageRecoveryRouter.GET("/recovery", middleware.ImageRecoveryCapabilities)
+	imageRecoveryRouter.GET("/requests/:id", middleware.ImageRecoveryResult)
+	imageRecoveryRouter.DELETE("/requests/:id", middleware.ImageRecoveryResult)
+
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.RouteTag("relay"))
 	relayV1Router.Use(middleware.SystemPerformanceCheck())
 	relayV1Router.Use(middleware.TokenAuth())
+	relayV1Router.Use(middleware.RecoverImageResponse())
 	{
 		// Responses WebSocket route. Channel selection happens after the first
 		// response.create event; each event runs the ordinary request limiter.
@@ -211,6 +221,7 @@ func SetRelayRouter(router *gin.Engine) {
 	relayGeminiRouter.Use(middleware.RouteTag("relay"))
 	relayGeminiRouter.Use(middleware.SystemPerformanceCheck())
 	relayGeminiRouter.Use(middleware.TokenAuth())
+	relayGeminiRouter.Use(middleware.RecoverImageResponse())
 	relayGeminiRouter.Use(middleware.ModelRequestRateLimit())
 	relayGeminiRouter.Use(middleware.Distribute())
 	{

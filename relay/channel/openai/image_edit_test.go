@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -95,4 +96,43 @@ func TestConvertImageEditRequestMultipart(t *testing.T) {
 
 		convertAndReplay(t, c, prompt)
 	})
+}
+
+func TestImageEditRetryRestoresOriginalMultipartBoundary(t *testing.T) {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	require.NoError(t, w.WriteField("model", "gpt-image-1"))
+	require.NoError(t, w.WriteField("prompt", "edit"))
+	part, err := w.CreateFormFile("image", "reference.png")
+	require.NoError(t, err)
+	pixels := strings.Repeat("image-bytes", 1024)
+	_, err = io.WriteString(part, pixels)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+	c.Request.Header.Set("Content-Type", w.FormDataContentType())
+	storage, err := common.GetBodyStorage(c)
+	require.NoError(t, err)
+	t.Cleanup(func() { common.CleanupBodyStorage(c) })
+	_, err = (&Adaptor{}).ConvertImageRequest(c, &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeImagesEdits}, dto.ImageRequest{Model: "gpt-image-1", Prompt: "edit"})
+	require.NoError(t, err)
+	require.NotEqual(t, w.FormDataContentType(), c.GetHeader("Content-Type"))
+	bytesOriginal, err := storage.Bytes()
+	require.NoError(t, err)
+	broken := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(bytesOriginal))
+	broken.Header.Set("Content-Type", c.GetHeader("Content-Type"))
+	require.Error(t, broken.ParseMultipartForm(32<<20), "reproduces the old raw-body/new-boundary mismatch")
+	require.NoError(t, common.RestoreRequestBody(c))
+	replayed := httptest.NewRequest(http.MethodPost, "/", c.Request.Body)
+	replayed.Header.Set("Content-Type", c.GetHeader("Content-Type"))
+	require.NoError(t, replayed.ParseMultipartForm(32<<20))
+	defer replayed.MultipartForm.RemoveAll()
+	file, err := replayed.MultipartForm.File["image"][0].Open()
+	require.NoError(t, err)
+	defer file.Close()
+	data, err := io.ReadAll(file)
+	require.NoError(t, err)
+	require.Equal(t, pixels, string(data))
+	require.Equal(t, "edit", replayed.FormValue("prompt"))
 }

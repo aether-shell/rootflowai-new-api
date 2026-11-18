@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +25,24 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestImageRetryDoesNotResubmitInvalidOrAmbiguousRequests(t *testing.T) {
+	previous := operation_setting.AutomaticRetryStatusCodeRanges
+	operation_setting.AutomaticRetryStatusCodeRanges = []operation_setting.StatusCodeRange{{Start: 400, End: 599}}
+	t.Cleanup(func() { operation_setting.AutomaticRetryStatusCodeRanges = previous })
+	for _, status := range []int{400, 413, 422, 500, 502, 503, 504} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+		err := types.NewOpenAIError(errors.New("image failed"), types.ErrorCodeBadResponseStatusCode, status)
+		assert.Equal(t, "stop", DecideRelayRetry(c, err, 3).Action, "status %d", status)
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	err := types.NewOpenAIError(errors.New("lost connection"), types.ErrorCodeDoRequestFailed, 500)
+	assert.Equal(t, "request_cancelled", DecideRelayRetry(c, err, 3).Reason)
+}
 
 func TestShouldRetryRelayErrorHonorsChannelPinOnChannelError(t *testing.T) {
 	err := types.NewError(errors.New("channel failed"), types.ErrorCodeChannelNoAvailableKey)
