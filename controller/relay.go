@@ -3,7 +3,6 @@ package controller
 import (
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -147,6 +146,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	// Native Gemini image calls need the same no-resubmit policy as Images.
+	// Chat aliases explicitly containing "image" are also used for image output.
+	if imageRequest, ok := request.(*dto.GeminiChatRequest); ok {
+		for _, modality := range imageRequest.GenerationConfig.ResponseModalities {
+			if strings.EqualFold(modality, "image") {
+				c.Set("image_generation_request", true)
+			}
+		}
+	}
+	modelName := strings.ToLower(relayInfo.OriginModelName)
+	if strings.HasPrefix(modelName, "gpt-image-") || (strings.HasPrefix(modelName, "gemini-") && strings.Contains(modelName, "image")) {
+		c.Set("image_generation_request", true)
+	}
 
 	defer func() {
 		recovered := recover()
@@ -187,6 +199,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	var lastActionableChannelError *types.NewAPIError
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+		if requestErr := c.Request.Context().Err(); requestErr != nil {
+			newAPIError = types.NewOpenAIError(requestErr, types.ErrorCodeDoRequestFailed, http.StatusRequestTimeout, types.ErrOptionWithSkipRetry())
+			break
+		}
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
@@ -205,7 +221,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 
-		bodyStorage, bodyErr := common.GetBodyStorage(c)
+		bodyErr := common.RestoreRequestBody(c)
 		if bodyErr != nil {
 			// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
 			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
@@ -215,7 +231,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			break
 		}
-		c.Request.Body = io.NopCloser(bodyStorage)
 		c.Set(common.ChannelErrorForUserKey, true)
 
 		switch relayFormat {
@@ -620,7 +635,7 @@ func executeTaskSubmissionWith(
 		diagnostics.attempt(retryParam.GetRetry()+1, channel, relayInfo.LockedChannel != nil)
 
 		service.AppendUsedChannel(c, channel.Id)
-		bodyStorage, bodyErr := common.GetBodyStorage(c)
+		bodyErr := common.RestoreRequestBody(c)
 		if bodyErr != nil {
 			stage = "read_body"
 			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
@@ -630,8 +645,6 @@ func executeTaskSubmissionWith(
 			}
 			break
 		}
-		c.Request.Body = io.NopCloser(bodyStorage)
-
 		stage = "submit"
 		result, taskErr = submit(c, relayInfo)
 		if requestErr := c.Request.Context().Err(); requestErr != nil {

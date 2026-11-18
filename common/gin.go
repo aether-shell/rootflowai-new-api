@@ -24,6 +24,7 @@ import (
 const KeyRequestBody = "key_request_body"
 const KeyBodyStorage = "key_body_storage"
 const keyBodyReadError = "key_body_read_error"
+const keyOriginalContentType = "original_request_content_type"
 
 var ErrRequestBodyTooLarge = errors.New("request body too large")
 
@@ -39,6 +40,9 @@ func IsRequestBodyTooLargeError(err error) bool {
 }
 
 func GetRequestBody(c *gin.Context) (io.Seeker, error) {
+	if _, exists := c.Get(keyOriginalContentType); !exists {
+		c.Set(keyOriginalContentType, c.Request.Header.Get("Content-Type"))
+	}
 	// 首先检查是否有 BodyStorage 缓存
 	if storage, exists := c.Get(KeyBodyStorage); exists && storage != nil {
 		if bs, ok := storage.(BodyStorage); ok {
@@ -105,6 +109,24 @@ func GetBodyStorage(c *gin.Context) (BodyStorage, error) {
 		return nil, errors.New("unexpected body storage type")
 	}
 	return bs, nil
+}
+
+// RestoreRequestBody pairs the original payload with its original media type.
+// Adaptors may rebuild multipart bodies and replace the boundary for one attempt.
+// Replaying only the bytes would send the next channel a mismatched boundary.
+func RestoreRequestBody(c *gin.Context) error {
+	storage, err := GetBodyStorage(c)
+	if err != nil {
+		return err
+	}
+	c.Request.Body = io.NopCloser(storage)
+	contentType := c.GetString(keyOriginalContentType)
+	if contentType == "" {
+		c.Request.Header.Del("Content-Type")
+	} else {
+		c.Request.Header.Set("Content-Type", contentType)
+	}
+	return nil
 }
 
 // CleanupBodyStorage 清理请求体存储（应在请求结束时调用）

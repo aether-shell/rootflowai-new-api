@@ -246,6 +246,16 @@ docker compose logs -f new-api
 
 从[发布页](https://github.com/QuantumNous/new-api/releases)选择明确的镜像版本，阅读升级说明并先备份再升级。`latest` 会随发布构建变化；已有实例应按实际版本评估迁移与兼容性。
 
+### 可选的生图结果恢复
+
+`IMAGE_RECOVERY_ENABLED=true` 启用非流式 JSON 生图响应恢复，默认关闭，要求全部副本完成升级并共享 Redis。启用前为最多 8 条、每条 32 MiB 的响应预留内存并检查 Redis 访问与持久化策略；正文总预算最多 256 MiB，另需为 Redis 元数据、内存碎片及其他业务缓存留余量。同一 Token 最多 4 条未确认结果。去重元数据另限制为全局 4096 条、每 Token 512 条，达到上限在生成前拒绝。结果保留期限为提交后 30 分钟，生成独立运行期限 20 分钟；不保存请求正文或 API Key。此功能不改变生成价格及原有结算流程，也不能恢复已经丢失的历史结果。
+
+客户端先以 Bearer Key 请求 `GET /v1/images/recovery`，仅在 `version=1`、`enabled=true` 时为生成 POST 携带随机 UUID v4 `X-RootFlow-Image-Request`。支持 `/v1/images/generations`、`/v1/images/edits`、`/v1/chat/completions` 与 `/v1beta/models/{model}:generateContent` 的非流式 JSON 请求。同 Key、同 ID、同内容只执行一次；内容不同返回 409。缓存容量或存储不可用时在生成前返回 503。未协商的客户端保持原行为。
+
+连接中断后调用 `GET /v1/images/requests/{id}`。响应状态为 `pending`、`completed`、`unavailable` 或已确认的 `delivered`；完成时包含原 HTTP `status`、公开响应字符串 `body`、`content_type` 和平台 `request_id`。查询无需剩余额度，复用 `TokenAuthReadOnly`：允许额度耗尽或已过期 Token 读取自己的短期结果，仍拒绝禁用 Token、封禁用户与不满足 IP 白名单的请求；用户 ID 与 Token ID 双重隔离，未知和跨 Token 请求均返回 404，所有响应禁止缓存。收到完整结果后 `DELETE /v1/images/requests/{id}` 确认收取，释放图片与容量，保留去重记录到原期限，避免正常连续生图耗尽缓存。
+
+客户端只能查询已有结果，不能在断连、5xx 或解析失败后自动重发生成。超过大小上限的响应仍向原连接发送，但不能缓存恢复；进程终止、Redis 丢失和超过运行期限的任务无法保证恢复。查询和确认收取不触发生成、预扣或结算。停用时先关闭开关，保留查询接口至少 30 分钟再移除实现。鉴权设计参考 OWASP Authentication 与 Session Management Cheat Sheets；没有新建登录或会话体系。
+
 <a id="development"></a>
 
 ## 开发与扩展
