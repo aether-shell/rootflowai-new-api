@@ -2,10 +2,16 @@ package middleware
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -192,6 +198,39 @@ func CriticalRateLimit() func(c *gin.Context) {
 		return rateLimitFactory(common.CriticalRateLimitNum, common.CriticalRateLimitDuration, "CT")
 	}
 	return defNext
+}
+
+func TokenKeyCriticalRateLimit() gin.HandlerFunc {
+	critical := CriticalRateLimit()
+	secret, err := hex.DecodeString(os.Getenv("PORTAL_KEY_RATE_LIMIT_SECRET"))
+	if err != nil || len(secret) != 32 {
+		return critical
+	}
+	return func(ctx *gin.Context) {
+		proofs := ctx.Request.Header.Values("X-Portal-Key-Proof")
+		if len(proofs) == 1 && validPortalKeyProof(ctx, secret, proofs[0], time.Now().Unix()) {
+			return
+		}
+		critical(ctx)
+	}
+}
+
+func validPortalKeyProof(ctx *gin.Context, secret []byte, proof string, now int64) bool {
+	timestamp, digest, found := strings.Cut(proof, ".")
+	if !found || len(timestamp) != 10 || len(digest) != sha256.Size*2 || ctx.GetInt("id") <= 0 {
+		return false
+	}
+	seconds, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil || seconds < now-30 || seconds > now+5 {
+		return false
+	}
+	signature, err := hex.DecodeString(digest)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, secret)
+	_, _ = fmt.Fprintf(mac, "%s\n%s\n%d\n%s", ctx.Request.Method, ctx.Request.URL.Path, ctx.GetInt("id"), timestamp)
+	return hmac.Equal(signature, mac.Sum(nil))
 }
 
 func UserCriticalRateLimit(scope string) func(c *gin.Context) {
